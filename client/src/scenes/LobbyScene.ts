@@ -1,5 +1,5 @@
 import Phaser from "phaser";
-import { joinPublic, createPrivate, joinByCode } from "../net";
+import { joinPublic, createPrivate, joinByCode, warmUp } from "../net";
 import { enableSfx } from "../sfx";
 
 export class LobbyScene extends Phaser.Scene {
@@ -72,14 +72,27 @@ export class LobbyScene extends Phaser.Scene {
 
   private async tryJoin(status: Phaser.GameObjects.Text, fn: () => Promise<{ room: any }>) {
     enableSfx();
-    status.setText("接続中...");
+    status.setColor("#aaaaaa");
+    status.setText("サーバーに接続中...");
     try {
+      // 無料プランはアイドルからの復帰に時間がかかるので先にHTTPで起こす
+      let warmedQuickly = true;
+      const warmTimer = setTimeout(() => { warmedQuickly = false; }, 2500);
+      await warmUp((sec) => {
+        if (!warmedQuickly) {
+          status.setText(`サーバー起動中... (${Math.floor(sec)}秒 / 最大60秒)`);
+        }
+      });
+      clearTimeout(warmTimer);
+
+      status.setText("ルームに参加中...");
       const { room } = await fn();
       this.nameInput.remove();
       this.codeInput.remove();
       this.scene.start("Game", { room });
     } catch (e: any) {
       const msg = e?.message || String(e);
+      status.setColor("#ff8888");
       status.setText("失敗: " + msg);
     }
   }

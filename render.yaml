@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: unspottable-web-server
+    runtime: docker
+    plan: free
+    region: singapore
+    rootDir: server
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
