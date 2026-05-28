@@ -145,7 +145,9 @@ export class GameScene extends Phaser.Scene {
         if (id === this.myId && val > Date.now()) this.showAttackFx(id, entity);
       });
       $(entity).listen("stunned", (val: boolean) => {
-        if (val) this.flashHit(id);
+        // ヒット演出（白フラッシュ/星/スロー/シェイク）は自分だけ。
+        // 他人はサーバー由来のノックバック移動だけ見えるので正体が割れない。
+        if (val && id === this.myId) this.flashHit(id);
       });
     });
     $(state).entities.onRemove((_e: any, id: string) => this.removeEntityView(id));
