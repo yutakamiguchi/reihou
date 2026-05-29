@@ -1,6 +1,9 @@
 import Phaser from "phaser";
-import { LobbyScene } from "./scenes/LobbyScene";
-import { GameScene } from "./scenes/GameScene";
+import { HubScene } from "./scenes/HubScene";
+import { UnspottableLobbyScene } from "./scenes/unspottable/UnspottableLobbyScene";
+import { UnspottableGameScene } from "./scenes/unspottable/UnspottableGameScene";
+import { BombermanLobbyScene } from "./scenes/bomberman/BombermanLobbyScene";
+import { BombermanGameScene } from "./scenes/bomberman/BombermanGameScene";
 
 new Phaser.Game({
   type: Phaser.AUTO,
@@ -8,6 +11,10 @@ new Phaser.Game({
   width: 1280,
   height: 720,
   backgroundColor: "#2a2f3a",
-  scene: [LobbyScene, GameScene],
+  scene: [
+    HubScene,
+    UnspottableLobbyScene, UnspottableGameScene,
+    BombermanLobbyScene, BombermanGameScene,
+  ],
   pixelArt: true,
 });

@@ -30,30 +30,42 @@ export async function warmUp(onProgress?: (sec: number) => void): Promise<void> 
   }
 }
 
-export async function joinPublic(name: string): Promise<JoinResult> {
-  const room = await client.joinOrCreate("game", { name, code: "" });
+// --- ルーム名を引数に取る汎用接続関数（各ミニゲームから利用） ---
+
+export async function joinPublicRoom(roomName: string, name: string): Promise<JoinResult> {
+  const room = await client.joinOrCreate(roomName, { name, code: "" });
   await waitForInitialState(room);
   return { room };
 }
 
-export async function createPrivate(name: string): Promise<JoinResult> {
+export async function createPrivateRoom(roomName: string, name: string): Promise<JoinResult> {
   const code = generateCode();
-  const room = await client.create("game", { name, code });
+  const room = await client.create(roomName, { name, code });
   await waitForInitialState(room);
   return { room };
 }
 
-export async function joinByCode(name: string, code: string): Promise<JoinResult> {
-  const room = await client.join("game", { name, code });
+export async function joinRoomByCode(roomName: string, name: string, code: string): Promise<JoinResult> {
+  const room = await client.join(roomName, { name, code });
   await waitForInitialState(room);
   return { room };
 }
 
+// --- 既存 Unspottable 呼び出しの互換ラッパ ---
+
+export const joinPublic = (name: string) => joinPublicRoom("unspottable", name);
+export const createPrivate = (name: string) => createPrivateRoom("unspottable", name);
+export const joinByCode = (name: string, code: string) => joinRoomByCode("unspottable", name, code);
+
+/**
+ * 初期stateが届くまで待つ。全ミニゲーム共通の判定として
+ * 「state が定義され、phase と players を持つ」ことを使う。
+ */
 function waitForInitialState(room: Room): Promise<void> {
   return new Promise((resolve) => {
     const ready = () => {
       const s: any = room.state;
-      return !!s && s.obstacles !== undefined && s.entities !== undefined && s.players !== undefined;
+      return !!s && s.phase !== undefined && s.players !== undefined;
     };
     if (ready()) { resolve(); return; }
     const interval = setInterval(() => {

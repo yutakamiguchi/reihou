@@ -1,5 +1,6 @@
 import { Room, Client } from "colyseus";
 import { GameState, Player, Entity, Obstacle, Grave } from "../schema/GameState";
+import { canStartRound } from "./phase";
 
 const NPC_COUNT = 40;
 const PLAYER_SPEED = 140;
@@ -199,9 +200,7 @@ export class GameRoom extends Room<GameState> {
 
   private maybeStartRound() {
     if (this.state.phase !== "lobby") return;
-    const players = Array.from(this.state.players.values());
-    if (players.length < 2) return;
-    if (!players.every(p => p.ready)) return;
+    if (!canStartRound(this.state.players)) return;
     this.startRound();
   }
 

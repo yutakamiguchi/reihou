@@ -1,7 +1,7 @@
 import Phaser from "phaser";
 import { getStateCallbacks, type Room } from "colyseus.js";
-import { sfxHitPlayer, sfxHitNpc, sfxScore, sfxFootstep, sfxRoundStart, sfxRoundEnd } from "../sfx";
-import { ensureCharTexture, CHAR_TEX } from "../character";
+import { sfxHitPlayer, sfxHitNpc, sfxScore, sfxFootstep, sfxRoundStart, sfxRoundEnd } from "../../sfx";
+import { ensureCharTexture, CHAR_TEX } from "../../character";
 
 // サーバー(GameRoom)と一致させる移動パラメータ。クライアント予測で使用。
 const PLAYER_SPEED = 140;
@@ -21,7 +21,7 @@ interface EntityView {
   facing: number; // -1 左向き / 1 右向き
 }
 
-export class GameScene extends Phaser.Scene {
+export class UnspottableGameScene extends Phaser.Scene {
   private room!: Room;
   private myId!: string;
   private views = new Map<string, EntityView>();
@@ -45,7 +45,7 @@ export class GameScene extends Phaser.Scene {
   private predictReady = false;
   private graveViews = new Map<any, Phaser.GameObjects.Container>();
 
-  constructor() { super("Game"); }
+  constructor() { super("UnspottableGame"); }
 
   init(data: { room: Room }) {
     this.room = data.room;
@@ -150,6 +150,9 @@ export class GameScene extends Phaser.Scene {
 
     this.keys.SPACE.on("down", () => this.room.send("attack"));
 
+    // ESC でルーム退室 → onLeave 経由でロビーへ戻る
+    this.input.keyboard!.on("keydown-ESC", () => this.room.leave());
+
     const $ = getStateCallbacks(this.room);
 
     $(state).entities.onAdd((entity: any, id: string) => {
@@ -185,7 +188,7 @@ export class GameScene extends Phaser.Scene {
     scorePanel.setVisible(true);
     void scorePanel;
 
-    this.room.onLeave(() => this.scene.start("Lobby"));
+    this.room.onLeave(() => this.scene.start("UnspottableLobby"));
 
     this.onPhaseChanged();
   }
