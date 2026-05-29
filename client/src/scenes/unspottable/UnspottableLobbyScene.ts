@@ -3,6 +3,7 @@ import { joinPublic, createPrivate, joinByCode } from "../../net";
 import { enableSfx } from "../../sfx";
 import { makeInput, makeButton } from "../../ui/nameInput";
 import { tryJoin } from "../../ui/connectFlow";
+import { loadPlayerName, savePlayerName } from "../../ui/playerName";
 
 export class UnspottableLobbyScene extends Phaser.Scene {
   private nameInput!: HTMLInputElement;
@@ -25,7 +26,7 @@ export class UnspottableLobbyScene extends Phaser.Scene {
     makeButton(this, 90, 40, "← ハブ", "#aaaaaa", () => this.scene.start("Hub"));
 
     // --- 名前入力 ---
-    this.nameInput = makeInput(this, "名前", 16, "Player" + Math.floor(Math.random() * 1000),
+    this.nameInput = makeInput(this, "名前", 16, loadPlayerName(),
       width / 2, 230);
 
     // --- 3つの参加方法 ---
@@ -75,6 +76,8 @@ export class UnspottableLobbyScene extends Phaser.Scene {
   }
 
   private getName(): string {
-    return this.nameInput.value.trim() || "Player";
+    const name = this.nameInput.value.trim() || "Player";
+    savePlayerName(name);
+    return name;
   }
 }

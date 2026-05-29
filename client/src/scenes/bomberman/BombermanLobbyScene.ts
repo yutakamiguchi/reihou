@@ -3,6 +3,7 @@ import { joinPublicRoom, createPrivateRoom, joinRoomByCode } from "../../net";
 import { enableSfx } from "../../sfx";
 import { makeInput, makeButton } from "../../ui/nameInput";
 import { tryJoin } from "../../ui/connectFlow";
+import { loadPlayerName, savePlayerName } from "../../ui/playerName";
 
 const ROOM = "bomberman";
 
@@ -25,7 +26,7 @@ export class BombermanLobbyScene extends Phaser.Scene {
 
     makeButton(this, 90, 40, "← ハブ", "#aaaaaa", () => this.scene.start("Hub"));
 
-    this.nameInput = makeInput(this, "名前", 16, "Player" + Math.floor(Math.random() * 1000),
+    this.nameInput = makeInput(this, "名前", 16, loadPlayerName(),
       width / 2, 230);
 
     const status = this.add.text(width / 2, height - 130, "", {
@@ -108,6 +109,8 @@ export class BombermanLobbyScene extends Phaser.Scene {
   }
 
   private getName(): string {
-    return this.nameInput.value.trim() || "Player";
+    const name = this.nameInput.value.trim() || "Player";
+    savePlayerName(name);
+    return name;
   }
 }
