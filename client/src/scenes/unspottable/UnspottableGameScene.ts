@@ -5,6 +5,7 @@ import {
   preloadCharTextures, ensureCharAnims, applyCharPose,
   dirFromVector, dirFromAngle, CHAR_INITIAL_TEX, type Dir,
 } from "../../character";
+import { addMoveKeys } from "../../ui/inputKeys";
 
 // サーバー(GameRoom)と一致させる移動パラメータ。クライアント予測で使用。
 const PLAYER_SPEED = 140;

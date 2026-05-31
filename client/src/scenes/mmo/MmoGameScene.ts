@@ -5,6 +5,7 @@ import {
   dirFromVector, dirFromAngle, CHAR_INITIAL_TEX, type Dir,
 } from "../../character";
 import { sfxHitPlayer, sfxHitNpc, sfxScore, sfxFootstep, sfxRoundStart } from "../../sfx";
+import { addMoveKeys } from "../../ui/inputKeys";
 
 const PLAYER_SPEED = 140;
 const ENTITY_RADIUS = 14;
@@ -119,13 +120,7 @@ export class MmoGameScene extends Phaser.Scene {
     }).setOrigin(1, 1).setScrollFactor(0).setDepth(1000);
 
     // --- 入力 ---
-    this.keys = this.input.keyboard!.addKeys({
-      W: Phaser.Input.Keyboard.KeyCodes.W, A: Phaser.Input.Keyboard.KeyCodes.A,
-      S: Phaser.Input.Keyboard.KeyCodes.S, D: Phaser.Input.Keyboard.KeyCodes.D,
-      UP: Phaser.Input.Keyboard.KeyCodes.UP, DOWN: Phaser.Input.Keyboard.KeyCodes.DOWN,
-      LEFT: Phaser.Input.Keyboard.KeyCodes.LEFT, RIGHT: Phaser.Input.Keyboard.KeyCodes.RIGHT,
-      SPACE: Phaser.Input.Keyboard.KeyCodes.SPACE,
-    }) as any;
+    this.keys = addMoveKeys(this);
     this.keys.SPACE.on("down", () => this.room.send("attack"));
     this.input.keyboard!.on("keydown-ESC", () => this.room.leave());
 

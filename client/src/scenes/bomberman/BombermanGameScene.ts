@@ -6,6 +6,7 @@ import {
 } from "../../character";
 import { COLORS } from "../../colors";
 import { sfxHitPlayer, sfxScore, sfxRoundStart, sfxRoundEnd } from "../../sfx";
+import { addMoveKeys } from "../../ui/inputKeys";
 
 const CHAR_DISPLAY_H = 48;
 
@@ -126,13 +127,7 @@ export class BombermanGameScene extends Phaser.Scene {
       this.readyButton.setText("準備済み...").disableInteractive();
     });
 
-    this.keys = this.input.keyboard!.addKeys({
-      W: Phaser.Input.Keyboard.KeyCodes.W, A: Phaser.Input.Keyboard.KeyCodes.A,
-      S: Phaser.Input.Keyboard.KeyCodes.S, D: Phaser.Input.Keyboard.KeyCodes.D,
-      UP: Phaser.Input.Keyboard.KeyCodes.UP, DOWN: Phaser.Input.Keyboard.KeyCodes.DOWN,
-      LEFT: Phaser.Input.Keyboard.KeyCodes.LEFT, RIGHT: Phaser.Input.Keyboard.KeyCodes.RIGHT,
-      SPACE: Phaser.Input.Keyboard.KeyCodes.SPACE,
-    }) as any;
+    this.keys = addMoveKeys(this);
     this.keys.SPACE.on("down", () => this.room.send("placeBomb"));
     this.input.keyboard!.on("keydown-ESC", () => this.room.leave());
 
