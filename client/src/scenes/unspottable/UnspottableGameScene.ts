@@ -1,12 +1,15 @@
 import Phaser from "phaser";
 import { getStateCallbacks, type Room } from "colyseus.js";
 import { sfxHitPlayer, sfxHitNpc, sfxScore, sfxFootstep, sfxRoundStart, sfxRoundEnd } from "../../sfx";
-import { ensureCharTexture, CHAR_TEX } from "../../character";
+import {
+  preloadCharTextures, ensureCharAnims, applyCharPose,
+  dirFromVector, dirFromAngle, CHAR_INITIAL_TEX, type Dir,
+} from "../../character";
 
 // サーバー(GameRoom)と一致させる移動パラメータ。クライアント予測で使用。
 const PLAYER_SPEED = 140;
 const ENTITY_RADIUS = 14;
-const CHAR_SCALE = 1; // 32px テクスチャをそのまま表示
+const CHAR_DISPLAY_H = 64;                 // キャラの表示高さ(px)
 
 interface ObstacleRect { x: number; y: number; w: number; h: number; }
 
@@ -17,8 +20,10 @@ interface EntityView {
   nameLabel?: Phaser.GameObjects.Text;
   attackFx?: Phaser.GameObjects.Arc;
   hitFlash?: Phaser.Tweens.Tween;
-  lastFootstepFrame: string;
-  facing: number; // -1 左向き / 1 右向き
+  lastStep: number;   // 足音を鳴らした歩数（アニメフレーム切替ごと）
+  punching: boolean;  // パンチ画像に差し替え中か
+  dir: Dir;           // 現在の向き
+  flip: boolean;      // side のとき左向きか
 }
 
 export class UnspottableGameScene extends Phaser.Scene {
@@ -52,19 +57,13 @@ export class UnspottableGameScene extends Phaser.Scene {
     this.myId = this.room.sessionId;
   }
 
+  preload() {
+    preloadCharTextures(this);
+  }
+
   create() {
     const { width, height } = this.scale;
-
-    // ドット絵キャラのテクスチャ生成 + 歩行アニメ定義
-    ensureCharTexture(this);
-    if (!this.anims.exists("char_walk")) {
-      this.anims.create({
-        key: "char_walk",
-        frames: [{ key: CHAR_TEX, frame: 1 }, { key: CHAR_TEX, frame: 2 }],
-        frameRate: 8, repeat: -1,
-      });
-      this.anims.create({ key: "char_idle", frames: [{ key: CHAR_TEX, frame: 0 }] });
-    }
+    ensureCharAnims(this);
 
     // --- マップ床 ---
     this.add.rectangle(width / 2, height / 2, width, height, 0x4a5566);
@@ -222,33 +221,35 @@ export class UnspottableGameScene extends Phaser.Scene {
       v.container.setPosition(cx, cy);
       v.container.setDepth(cy); // y-sort
 
-      // 歩行アニメ（自分は予測入力ベース、他者はサーバー速度ベース）
-      let vxForFacing: number;
+      // 移動方向の算出（自分は予測入力ベース、他者はサーバー速度ベース）
+      let dx: number, dy: number;
       let moving: boolean;
       if (id === this.myId && state.phase === "playing" && !entity.stunned) {
+        dx = (right ? 1 : 0) - (left ? 1 : 0);
+        dy = (down ? 1 : 0) - (up ? 1 : 0);
         moving = (up || down || left || right);
-        vxForFacing = (right ? 1 : 0) - (left ? 1 : 0);
       } else {
+        dx = entity.vx; dy = entity.vy;
         moving = Math.hypot(entity.vx, entity.vy) > 5 && !entity.stunned;
-        vxForFacing = entity.vx;
       }
 
-      // 歩行/待機アニメの切替
-      const wantAnim = moving ? "char_walk" : "char_idle";
-      if (v.sprite.anims.currentAnim?.key !== wantAnim) v.sprite.play(wantAnim, true);
-
-      // 左右の向き（横移動があるときだけ更新）
-      if (Math.abs(vxForFacing) > 0.1) {
-        v.facing = vxForFacing < 0 ? -1 : 1;
-        v.sprite.setFlipX(v.facing < 0);
+      // 向き・歩行/待機ポーズの適用（パンチ中は触らない）
+      if (!v.punching) {
+        if (moving) {
+          const d = dirFromVector(dx, dy);
+          if (d) { v.dir = d.dir; v.flip = d.flip; }
+          applyCharPose(v.sprite, v.dir, "walk", v.flip, CHAR_DISPLAY_H);
+        } else {
+          applyCharPose(v.sprite, v.dir, "idle", v.flip, CHAR_DISPLAY_H);
+        }
       }
 
-      // 足音（自キャラのみ、歩行フレームの切替に同期）
-      if (moving && id === this.myId) {
-        const frameName = String(v.sprite.anims.currentFrame?.textureFrame ?? "");
-        if (frameName !== v.lastFootstepFrame) {
+      // 足音（自キャラのみ、歩行アニメのコマ切替に同期）
+      if (moving && !v.punching && id === this.myId) {
+        const step = v.sprite.anims.currentFrame?.index ?? 0;
+        if (step !== v.lastStep) {
           sfxFootstep();
-          v.lastFootstepFrame = frameName;
+          v.lastStep = step;
         }
       }
 
@@ -370,21 +371,22 @@ export class UnspottableGameScene extends Phaser.Scene {
 
   private addEntityView(id: string, entity: any) {
     const container = this.add.container(entity.x, entity.y);
-    // ドット絵スプライト（足元＝靴の下端がコンテナ原点に来るよう origin を下げる）
-    const sprite = this.add.sprite(0, 0, CHAR_TEX, 0)
-      .setOrigin(0.5, 0.9)
-      .setScale(CHAR_SCALE);
-    sprite.play("char_idle");
+    // イラストスプライト（足元がコンテナ原点に来るよう origin を最下端付近へ）
+    const sprite = this.add.sprite(0, 0, CHAR_INITIAL_TEX)
+      .setOrigin(0.5, 0.96);
+    applyCharPose(sprite, "front", "idle", false, CHAR_DISPLAY_H);
     // 影（足元＝原点の真下にぴったり敷く）
-    const shadow = this.add.ellipse(0, 0, 22, 7, 0x000000, 0.4);
+    const shadow = this.add.ellipse(0, 0, 26, 9, 0x000000, 0.4);
 
     container.add([shadow, sprite]);
     this.worldLayer.add(container);
 
     const view: EntityView = {
       container, shadow, sprite,
-      lastFootstepFrame: "",
-      facing: 1,
+      lastStep: 0,
+      punching: false,
+      dir: "front",
+      flip: false,
     };
     this.views.set(id, view);
     this.updateLabelForPhase(id, entity);
@@ -495,14 +497,26 @@ export class UnspottableGameScene extends Phaser.Scene {
   private showAttackFx(id: string, entity: any) {
     const v = this.views.get(id);
     if (!v) return;
-    // スプライトを攻撃方向へ素早く突き出して戻す（パンチの溜め→突き）
+    // 攻撃方向のパンチ画像に差し替え、その方向へ素早く突き出して戻す
+    const cos = Math.cos(entity.dir);
+    const d = dirFromAngle(entity.dir);
+    v.punching = true;
+    v.dir = d.dir; v.flip = d.flip;
+    applyCharPose(v.sprite, d.dir, "punch", d.flip, CHAR_DISPLAY_H);
     const lunge = 8;
     this.tweens.add({
       targets: v.sprite,
-      x: Math.cos(entity.dir) * lunge,
+      x: cos * lunge,
       y: -Math.abs(Math.sin(entity.dir)) * 2,
       duration: 70, ease: "Quad.easeOut", yoyo: true, hold: 30,
       onComplete: () => v.sprite.setPosition(0, 0),
+    });
+    // 攻撃モーション後、立ち絵へ戻す（次フレームで歩行/待機が再判定される）
+    this.time.delayedCall(220, () => {
+      if (!v.sprite.active) return;
+      v.punching = false;
+      applyCharPose(v.sprite, v.dir, "idle", v.flip, CHAR_DISPLAY_H);
+      v.sprite.setPosition(0, 0);
     });
     this.spawnConeFlash(v.container.x, v.container.y, entity.dir);
   }

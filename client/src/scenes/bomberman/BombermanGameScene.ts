@@ -1,8 +1,13 @@
 import Phaser from "phaser";
 import { getStateCallbacks, type Room } from "colyseus.js";
-import { ensureCharTexture, CHAR_TEX } from "../../character";
+import {
+  preloadCharTextures, ensureCharAnims, applyCharPose,
+  CHAR_INITIAL_TEX, type Dir,
+} from "../../character";
 import { COLORS } from "../../colors";
 import { sfxHitPlayer, sfxScore, sfxRoundStart, sfxRoundEnd } from "../../sfx";
+
+const CHAR_DISPLAY_H = 60;
 
 interface PlayerView {
   container: Phaser.GameObjects.Container;
@@ -12,6 +17,8 @@ interface PlayerView {
   lastX: number;
   lastY: number;
   wasAlive: boolean;
+  dir: Dir;
+  flip: boolean;
 }
 
 export class BombermanGameScene extends Phaser.Scene {
@@ -51,24 +58,19 @@ export class BombermanGameScene extends Phaser.Scene {
     this.myId = this.room.sessionId;
   }
 
+  preload() {
+    preloadCharTextures(this);
+  }
+
   create() {
     const { width, height } = this.scale;
+    ensureCharAnims(this);
     const state: any = this.room.state;
     this.ts = state.tileSize;
     const gridW = state.cols * this.ts;
     const gridH = state.rows * this.ts;
     this.offsetX = Math.floor((width - gridW) / 2);
     this.offsetY = Math.floor((height - gridH) / 2) + 20;
-
-    ensureCharTexture(this);
-    if (!this.anims.exists("char_walk")) {
-      this.anims.create({
-        key: "char_walk",
-        frames: [{ key: CHAR_TEX, frame: 1 }, { key: CHAR_TEX, frame: 2 }],
-        frameRate: 8, repeat: -1,
-      });
-      this.anims.create({ key: "char_idle", frames: [{ key: CHAR_TEX, frame: 0 }] });
-    }
 
     this.add.rectangle(width / 2, height / 2, width, height, 0x2a2f3a);
 
@@ -186,13 +188,16 @@ export class BombermanGameScene extends Phaser.Scene {
       );
       v.container.setDepth(sy);
 
-      const moving = Math.hypot(sx - v.lastX, sy - v.lastY) > 0.4;
-      v.lastX = sx; v.lastY = sy;
-      const wantAnim = (moving && p.alive) ? "char_walk" : "char_idle";
-      if (v.sprite.anims.currentAnim?.key !== wantAnim) v.sprite.play(wantAnim, true);
+      // サーバーの向き（dir: 0=下/front, 1=左, 2=右, 3=上/back）を方向ポーズへ変換
+      if (p.dir === 0) { v.dir = "front"; v.flip = false; }
+      else if (p.dir === 3) { v.dir = "back"; v.flip = false; }
+      else if (p.dir === 1) { v.dir = "side"; v.flip = true; }
+      else if (p.dir === 2) { v.dir = "side"; v.flip = false; }
 
-      if (p.dir === 1) v.sprite.setFlipX(true);
-      else if (p.dir === 2) v.sprite.setFlipX(false);
+      // 歩行/待機ポーズの適用
+      const moving = Math.hypot(sx - v.lastX, sy - v.lastY) > 0.4 && p.alive;
+      v.lastX = sx; v.lastY = sy;
+      applyCharPose(v.sprite, v.dir, moving ? "walk" : "idle", v.flip, CHAR_DISPLAY_H);
 
       if (v.wasAlive && !p.alive) {
         v.wasAlive = false;
@@ -234,9 +239,9 @@ export class BombermanGameScene extends Phaser.Scene {
     const sx = this.offsetX + p.x;
     const sy = this.offsetY + p.y;
     const container = this.add.container(sx, sy);
-    const shadow = this.add.ellipse(0, 0, 22, 7, 0x000000, 0.4);
-    const sprite = this.add.sprite(0, 0, CHAR_TEX, 0).setOrigin(0.5, 0.9).setScale(1.25);
-    sprite.play("char_idle");
+    const shadow = this.add.ellipse(0, 0, 26, 9, 0x000000, 0.4);
+    const sprite = this.add.sprite(0, 0, CHAR_INITIAL_TEX).setOrigin(0.5, 0.96);
+    applyCharPose(sprite, "front", "idle", false, CHAR_DISPLAY_H);
     sprite.setTint(COLORS[p.colorIndex % COLORS.length]);
     if (id === this.myId) {
       const ring = this.add.ellipse(0, 2, 30, 12, 0xffe066, 0).setStrokeStyle(2, 0xffe066);
@@ -245,7 +250,7 @@ export class BombermanGameScene extends Phaser.Scene {
     container.add([shadow, sprite]);
     this.worldLayer.add(container);
 
-    this.players.set(id, { container, sprite, shadow, lastX: sx, lastY: sy, wasAlive: true });
+    this.players.set(id, { container, sprite, shadow, lastX: sx, lastY: sy, wasAlive: true, dir: "front", flip: false });
     this.updateLabelForPhase(id, p);
   }
 
