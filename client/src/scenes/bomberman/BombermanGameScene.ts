@@ -7,7 +7,7 @@ import {
 import { COLORS } from "../../colors";
 import { sfxHitPlayer, sfxScore, sfxRoundStart, sfxRoundEnd } from "../../sfx";
 
-const CHAR_DISPLAY_H = 60;
+const CHAR_DISPLAY_H = 48;
 
 interface PlayerView {
   container: Phaser.GameObjects.Container;
