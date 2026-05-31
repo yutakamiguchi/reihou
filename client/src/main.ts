@@ -4,6 +4,8 @@ import { UnspottableLobbyScene } from "./scenes/unspottable/UnspottableLobbyScen
 import { UnspottableGameScene } from "./scenes/unspottable/UnspottableGameScene";
 import { BombermanLobbyScene } from "./scenes/bomberman/BombermanLobbyScene";
 import { BombermanGameScene } from "./scenes/bomberman/BombermanGameScene";
+import { MmoLobbyScene } from "./scenes/mmo/MmoLobbyScene";
+import { MmoGameScene } from "./scenes/mmo/MmoGameScene";
 
 new Phaser.Game({
   type: Phaser.AUTO,
@@ -15,6 +17,7 @@ new Phaser.Game({
     HubScene,
     UnspottableLobbyScene, UnspottableGameScene,
     BombermanLobbyScene, BombermanGameScene,
+    MmoLobbyScene, MmoGameScene,
   ],
   pixelArt: true,
 });

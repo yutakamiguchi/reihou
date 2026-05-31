@@ -24,6 +24,13 @@ const CARDS: GameCard[] = [
     sceneKey: "BombermanLobby",
     enabled: true,
   },
+  {
+    title: "MMO",
+    desc: "広い世界でモンスターを\n倒してレベルを上げろ",
+    color: 0x4ca36a,
+    sceneKey: "MmoLobby",
+    enabled: true,
+  },
 ];
 
 export class HubScene extends Phaser.Scene {
