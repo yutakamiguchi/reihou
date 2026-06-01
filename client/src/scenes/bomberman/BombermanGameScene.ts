@@ -67,6 +67,9 @@ export class BombermanGameScene extends Phaser.Scene {
   };
   private lastInputSent = { up: false, down: false, left: false, right: false };
 
+  // 押されている方向キーを「押した順」で保持。先に押した方向を優先する。
+  private dirOrder: Array<"up" | "down" | "left" | "right"> = [];
+
   // 自キャラのローカル予測。サーバー初回位置で初期化する。
   private predict: PredictState | null = null;
 
@@ -189,10 +192,27 @@ export class BombermanGameScene extends Phaser.Scene {
   update(_t: number, dtMs: number) {
     const state: any = this.room.state;
 
-    const up = this.keys.W.isDown || this.keys.UP.isDown;
-    const down = this.keys.S.isDown || this.keys.DOWN.isDown;
-    const left = this.keys.A.isDown || this.keys.LEFT.isDown;
-    const right = this.keys.D.isDown || this.keys.RIGHT.isDown;
+    // 押下状態から「先押し優先の単一方向」を求める。
+    // 斜め同時押しでも1方向だけに絞ることで、予測とサーバーの判断を一致させ
+    // 本番のレイテンシ下での壁めり込み/ズレを防ぐ。
+    const held = {
+      up: this.keys.W.isDown || this.keys.UP.isDown,
+      down: this.keys.S.isDown || this.keys.DOWN.isDown,
+      left: this.keys.A.isDown || this.keys.LEFT.isDown,
+      right: this.keys.D.isDown || this.keys.RIGHT.isDown,
+    };
+    // 新たに押された方向を順序の末尾へ、離された方向は除去
+    (["up", "down", "left", "right"] as const).forEach((d) => {
+      if (held[d] && !this.dirOrder.includes(d)) this.dirOrder.push(d);
+      if (!held[d]) this.dirOrder = this.dirOrder.filter((x) => x !== d);
+    });
+    // 最も古く押された（=先に押した）方向だけを有効にする
+    const active = this.dirOrder[0];
+    const up = active === "up";
+    const down = active === "down";
+    const left = active === "left";
+    const right = active === "right";
+
     if (state.phase === "playing") {
       const last = this.lastInputSent;
       if (up !== last.up || down !== last.down || left !== last.left || right !== last.right) {
@@ -274,7 +294,7 @@ export class BombermanGameScene extends Phaser.Scene {
   ) {
     const ts = this.ts;
     // 初回、または死亡/リスポーン級の大きなズレ（3マス超）だけ即ワープで再同期。
-    // 通常の小さなズレ（斜め入力時の曲がり判断差など）はワープせず、後段で緩く吸収する。
+    // 通常の小さなズレ（レイテンシ由来）はワープせず、後段で緩く吸収する。
     if (!this.predict || Math.hypot(this.predict.x - entity.x, this.predict.y - entity.y) > ts * 3) {
       this.predict = {
         col: entity.col, row: entity.row,
@@ -315,7 +335,7 @@ export class BombermanGameScene extends Phaser.Scene {
         pr.x += (ddx / dist) * step;
         pr.y += (ddy / dist) * step;
       }
-      // 移動中だけサーバー位置へ緩く補正（斜め入力時の判断差を滑らかに吸収）
+      // 移動中だけサーバー位置へ緩く補正（レイテンシ由来の軽微なズレを滑らかに吸収）
       const drift = Math.hypot(entity.x - pr.x, entity.y - pr.y);
       if (drift > 1) {
         const corr = drift > ts ? 0.2 : 0.06;
