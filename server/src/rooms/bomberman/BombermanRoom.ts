@@ -241,19 +241,8 @@ export class BombermanRoom extends Room<BombermanState> {
     const hasInput = !!(inp && (inp.up || inp.down || inp.left || inp.right));
     let mv = this.moves.get(sid) ?? null;
 
-    // 入力が無ければ最寄りのセル中心へスナップして即停止（ビタ止め）
-    if (!hasInput) {
-      const nearCol = Math.round((p.x - ts / 2) / ts);
-      const nearRow = Math.round((p.y - ts / 2) / ts);
-      p.col = nearCol; p.row = nearRow;
-      p.x = nearCol * ts + ts / 2;
-      p.y = nearRow * ts + ts / 2;
-      this.moves.set(sid, null);
-      return;
-    }
-
-    // 移動中でなければ入力から目標セルを決める
-    if (!mv && inp) {
+    // 移動中でなく、入力があれば次の目標セルを決める
+    if (!mv && hasInput && inp) {
       let dc = 0, dr = 0, dir = p.dir;
       if (inp.up) { dr = -1; dir = 3; }
       else if (inp.down) { dr = 1; dir = 0; }
@@ -269,6 +258,7 @@ export class BombermanRoom extends Room<BombermanState> {
       }
     }
 
+    // 移動中なら、入力が切れても目標セルまで進みきってから止まる（戻らない）
     if (!mv) return;
 
     // 目標セル中心へ移動

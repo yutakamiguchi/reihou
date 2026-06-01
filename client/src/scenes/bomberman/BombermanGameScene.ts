@@ -10,6 +10,19 @@ import { addMoveKeys } from "../../ui/inputKeys";
 
 const CHAR_DISPLAY_H = 48;
 
+// サーバー(BombermanRoom)と一致させる移動パラメータ。クライアント予測で使用。
+const BASE_SPEED = 144;
+const SPEED_PER_LEVEL = 0.22;
+const SNAP_EPS = 2;
+
+// 自キャラのローカル予測状態（サーバーのセル移動を再現）。
+interface PredictState {
+  col: number; row: number;
+  x: number; y: number;
+  dir: number; // 0=下 1=左 2=右 3=上（サーバーと同じ）
+  move: { targetCol: number; targetRow: number } | null;
+}
+
 interface PlayerView {
   container: Phaser.GameObjects.Container;
   sprite: Phaser.GameObjects.Sprite;
@@ -51,6 +64,9 @@ export class BombermanGameScene extends Phaser.Scene {
     SPACE: Phaser.Input.Keyboard.Key;
   };
   private lastInputSent = { up: false, down: false, left: false, right: false };
+
+  // 自キャラのローカル予測。サーバー初回位置で初期化する。
+  private predict: PredictState | null = null;
 
   constructor() { super("BombermanGame"); }
 
@@ -155,14 +171,14 @@ export class BombermanGameScene extends Phaser.Scene {
     this.onPhaseChanged();
   }
 
-  update(_t: number, _dtMs: number) {
+  update(_t: number, dtMs: number) {
     const state: any = this.room.state;
 
+    const up = this.keys.W.isDown || this.keys.UP.isDown;
+    const down = this.keys.S.isDown || this.keys.DOWN.isDown;
+    const left = this.keys.A.isDown || this.keys.LEFT.isDown;
+    const right = this.keys.D.isDown || this.keys.RIGHT.isDown;
     if (state.phase === "playing") {
-      const up = this.keys.W.isDown || this.keys.UP.isDown;
-      const down = this.keys.S.isDown || this.keys.DOWN.isDown;
-      const left = this.keys.A.isDown || this.keys.LEFT.isDown;
-      const right = this.keys.D.isDown || this.keys.RIGHT.isDown;
       const last = this.lastInputSent;
       if (up !== last.up || down !== last.down || left !== last.left || right !== last.right) {
         this.lastInputSent = { up, down, left, right };
@@ -170,24 +186,41 @@ export class BombermanGameScene extends Phaser.Scene {
       }
     }
 
+    // 自キャラのローカル予測を進める（入力遅延を消す）
+    const myEntity: any = state.players.get(this.myId);
+    if (myEntity && state.phase === "playing" && myEntity.alive) {
+      this.stepPredict(myEntity, dtMs, up, down, left, right);
+    } else {
+      this.predict = null; // 死亡/非プレイ中は予測を解除しサーバー位置に従う
+    }
+
     state.players.forEach((p: any, id: string) => {
       const v = this.players.get(id);
       if (!v) return;
-      const sx = this.offsetX + p.x;
-      const sy = this.offsetY + p.y;
-      // 自分は強めに（ビタ止め感）、他者は滑らかに補間
-      const t = id === this.myId ? 0.55 : 0.35;
-      v.container.setPosition(
-        Phaser.Math.Linear(v.container.x, sx, t),
-        Phaser.Math.Linear(v.container.y, sy, t),
-      );
+
+      let sx: number, sy: number;
+      if (id === this.myId && this.predict) {
+        // 自分は予測位置（即時）。サーバーとのズレはstepPredict内で緩く補正済み。
+        sx = this.offsetX + this.predict.x;
+        sy = this.offsetY + this.predict.y;
+        v.container.setPosition(sx, sy);
+      } else {
+        // 他者はサーバー位置へ補間
+        sx = this.offsetX + p.x;
+        sy = this.offsetY + p.y;
+        v.container.setPosition(
+          Phaser.Math.Linear(v.container.x, sx, 0.35),
+          Phaser.Math.Linear(v.container.y, sy, 0.35),
+        );
+      }
       v.container.setDepth(sy);
 
-      // サーバーの向き（dir: 0=下/front, 1=左, 2=右, 3=上/back）を方向ポーズへ変換
-      if (p.dir === 0) { v.dir = "front"; v.flip = false; }
-      else if (p.dir === 3) { v.dir = "back"; v.flip = false; }
-      else if (p.dir === 1) { v.dir = "side"; v.flip = true; }
-      else if (p.dir === 2) { v.dir = "side"; v.flip = false; }
+      // 向き（dir: 0=下/front, 1=左, 2=右, 3=上/back）。自分は予測の向きを優先（即時）。
+      const dirVal = (id === this.myId && this.predict) ? this.predict.dir : p.dir;
+      if (dirVal === 0) { v.dir = "front"; v.flip = false; }
+      else if (dirVal === 3) { v.dir = "back"; v.flip = false; }
+      else if (dirVal === 1) { v.dir = "side"; v.flip = true; }
+      else if (dirVal === 2) { v.dir = "side"; v.flip = false; }
 
       // 歩行/待機ポーズの適用
       const moving = Math.hypot(sx - v.lastX, sy - v.lastY) > 0.4 && p.alive;
@@ -216,6 +249,82 @@ export class BombermanGameScene extends Phaser.Scene {
     }
 
     this.refreshScoreboard();
+  }
+
+  // --- クライアント予測（サーバーの movePlayer を再現） ---
+
+  private stepPredict(
+    entity: any, dtMs: number,
+    up: boolean, down: boolean, left: boolean, right: boolean,
+  ) {
+    const ts = this.ts;
+    // 初回、または死亡/リスポーン級の大きなズレ（3マス超）だけ即ワープで再同期。
+    // 通常の小さなズレ（斜め入力時の曲がり判断差など）はワープせず、後段で緩く吸収する。
+    if (!this.predict || Math.hypot(this.predict.x - entity.x, this.predict.y - entity.y) > ts * 3) {
+      this.predict = {
+        col: entity.col, row: entity.row,
+        x: entity.x, y: entity.y, dir: entity.dir, move: null,
+      };
+    }
+    const pr = this.predict;
+    const dt = Math.min(dtMs, 50) / 1000;
+    const hasInput = up || down || left || right;
+
+    // 移動中でなく、入力があれば次の目標セルを決める
+    if (!pr.move && hasInput) {
+      let dc = 0, dr = 0, dir = pr.dir;
+      if (up) { dr = -1; dir = 3; }
+      else if (down) { dr = 1; dir = 0; }
+      else if (left) { dc = -1; dir = 1; }
+      else if (right) { dc = 1; dir = 2; }
+      if (dc !== 0 || dr !== 0) {
+        pr.dir = dir;
+        const ncol = pr.col + dc, nrow = pr.row + dr;
+        if (this.isPassable(ncol, nrow)) pr.move = { targetCol: ncol, targetRow: nrow };
+      }
+    }
+
+    const speed = BASE_SPEED * (1 + (entity.speed - 1) * SPEED_PER_LEVEL);
+    const step = speed * dt;
+    if (pr.move) {
+      // 移動中: 目標セル中心へ進む
+      const tx = pr.move.targetCol * ts + ts / 2;
+      const ty = pr.move.targetRow * ts + ts / 2;
+      const ddx = tx - pr.x, ddy = ty - pr.y;
+      const dist = Math.hypot(ddx, ddy);
+      if (dist <= step + SNAP_EPS) {
+        pr.x = tx; pr.y = ty;
+        pr.col = pr.move.targetCol; pr.row = pr.move.targetRow;
+        pr.move = null;
+      } else {
+        pr.x += (ddx / dist) * step;
+        pr.y += (ddy / dist) * step;
+      }
+      // 移動中だけサーバー位置へ緩く補正（斜め入力時の判断差を滑らかに吸収）
+      const drift = Math.hypot(entity.x - pr.x, entity.y - pr.y);
+      if (drift > 1) {
+        const corr = drift > ts ? 0.2 : 0.06;
+        pr.x = Phaser.Math.Linear(pr.x, entity.x, corr);
+        pr.y = Phaser.Math.Linear(pr.y, entity.y, corr);
+      }
+    } else {
+      // 停止中: 自分の居るマス中心へピタッとスナップ（半端な位置に残さない）
+      pr.x = pr.col * ts + ts / 2;
+      pr.y = pr.row * ts + ts / 2;
+    }
+  }
+
+  // クライアント側の通行判定（サーバー isPassable と同じルール）
+  private isPassable(col: number, row: number): boolean {
+    const state: any = this.room.state;
+    const cols = state.cols, rows = state.rows;
+    if (col < 0 || row < 0 || col >= cols || row >= rows) return false;
+    if (this.isHardWall(col, row, cols, rows)) return false;
+    if (this.softBlocks.has(`${col}_${row}`)) return false;
+    // 爆弾セルは通れない（state.bombs を走査）
+    let blocked = false;
+    state.bombs.forEach((b: any) => { if (b.col === col && b.row === row) blocked = true; });
+    return !blocked;
   }
 
   private cellCenter(col: number, row: number): { x: number; y: number } {
