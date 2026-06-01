@@ -14,13 +14,26 @@ const SOFT_BLOCK_RATIO = 0.72; // 空きセルに soft を置く確率
 const ITEM_DROP_CHANCE = 0.32;
 const SNAP_EPS = 2;           // セル中心への到達判定（px）
 
+const MAX_SLOTS = 4;          // プレイヤー＋CPU の合計上限
+const BOT_THINK_MS = 220;     // CPU が方針を再考する間隔
+const BOT_NAMES = ["CPU-A", "CPU-B", "CPU-C", "CPU-D"];
+
 interface BInput { up: boolean; down: boolean; left: boolean; right: boolean; }
 interface BMove { targetCol: number; targetRow: number; } // 移動中の目標セル（サーバー内部のみ）
+
+// CPU の思考状態（サーバー内部のみ）
+interface BotState {
+  nextThinkAt: number;
+  plan: Array<{ col: number; row: number }>; // 目標セルまでの経路
+  wantBomb: boolean;
+}
 
 export class BombermanRoom extends Room<BombermanState> {
   maxClients = 4;
   private inputs = new Map<string, BInput>();
   private moves = new Map<string, BMove | null>();
+  private bots = new Map<string, BotState>();
+  private botSeq = 0;
   private lastTick = 0;
   private roundEndsAt = 0;
   private bombSeq = 0;
@@ -53,6 +66,20 @@ export class BombermanRoom extends Room<BombermanState> {
       this.maybeStartRound();
     });
 
+    this.onMessage("addBot", () => {
+      if (this.state.phase !== "lobby") return;
+      if (this.state.players.size >= MAX_SLOTS) return;
+      this.addBot();
+    });
+
+    this.onMessage("removeBot", () => {
+      if (this.state.phase !== "lobby") return;
+      // 末尾の bot を1体削除
+      let target: string | null = null;
+      this.state.players.forEach((p, id) => { if (p.isBot) target = id; });
+      if (target) this.removePlayerId(target);
+    });
+
     this.setSimulationInterval((dt) => this.update(dt), 1000 / TICK_RATE);
     this.lastTick = Date.now();
   }
@@ -70,9 +97,33 @@ export class BombermanRoom extends Room<BombermanState> {
   }
 
   onLeave(client: Client) {
-    this.state.players.delete(client.sessionId);
-    this.inputs.delete(client.sessionId);
-    this.moves.delete(client.sessionId);
+    this.removePlayerId(client.sessionId);
+  }
+
+  // 人間・CPU 共通の退出処理。
+  private removePlayerId(id: string) {
+    this.state.players.delete(id);
+    this.inputs.delete(id);
+    this.moves.delete(id);
+    this.bots.delete(id);
+  }
+
+  // CPU を1体追加する。
+  private addBot() {
+    const id = `bot_${this.botSeq++}`;
+    const p = new BPlayer();
+    const botCount = Array.from(this.state.players.values()).filter(b => b.isBot).length;
+    p.name = BOT_NAMES[botCount % BOT_NAMES.length];
+    p.entityId = id;
+    p.isBot = true;
+    p.ready = true; // CPU は常に準備OK
+    p.colorIndex = Math.floor(Math.random() * NUM_COLORS);
+    const spawn = this.spawnCellFor(this.state.players.size);
+    this.placePlayerAtCell(p, spawn.col, spawn.row);
+    this.state.players.set(id, p);
+    this.inputs.set(id, { up: false, down: false, left: false, right: false });
+    this.moves.set(id, null);
+    this.bots.set(id, { nextThinkAt: 0, plan: [], wantBomb: false });
   }
 
   // --- マップ生成 ---
@@ -201,6 +252,11 @@ export class BombermanRoom extends Room<BombermanState> {
     if (this.state.phase !== "playing") return;
 
     this.state.timeLeft = Math.max(0, (this.roundEndsAt - now) / 1000);
+
+    // CPU 思考（入力を埋める）
+    this.state.players.forEach((p, sid) => {
+      if (p.isBot && p.alive) this.thinkBot(p, sid, now);
+    });
 
     // プレイヤー移動
     this.state.players.forEach((p, sid) => this.movePlayer(p, sid, dt));
@@ -359,6 +415,210 @@ export class BombermanRoom extends Room<BombermanState> {
     if (kind === "bomb") p.maxBombs++;
     else if (kind === "fire") p.range++;
     else if (kind === "speed") p.speed++;
+  }
+
+  // ===== CPU 思考 =====
+
+  private thinkBot(p: BPlayer, sid: string, now: number) {
+    const bot = this.bots.get(sid);
+    if (!bot) return;
+    const inp = this.inputs.get(sid)!;
+    const moving = this.moves.get(sid) != null;
+
+    // セル境界に乗っている時だけ方針転換（移動中は現在の1マスを進みきる）
+    if (!moving && now >= bot.nextThinkAt) {
+      bot.nextThinkAt = now + BOT_THINK_MS;
+      this.decideBot(p, bot);
+    }
+
+    // 爆弾を置きたい & まだ移動を始めていない（=セル中心にいる）なら設置
+    if (bot.wantBomb && !moving) {
+      this.tryPlaceBomb(sid);
+      bot.wantBomb = false;
+      // 設置直後は逃げ経路を即再計算
+      bot.plan = this.fleePath(p.col, p.row, true) ?? [];
+    }
+
+    // 経路の先頭セルへ1マス分の入力を出す
+    this.driveAlongPlan(p, inp, bot);
+  }
+
+  // 危険マップ: 現在の炎＋起爆予定の爆弾の爆風が及ぶセルを true に。
+  private buildDanger(extraBomb?: { col: number; row: number; range: number }): Set<string> {
+    const danger = new Set<string>();
+    this.state.flames.forEach((f) => danger.add(cellKey(f.col, f.row)));
+    const addBlast = (bcol: number, brow: number, range: number) => {
+      danger.add(cellKey(bcol, brow));
+      const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      for (const [dc, dr] of dirs) {
+        for (let i = 1; i <= range; i++) {
+          const col = bcol + dc * i, row = brow + dr * i;
+          if (this.isHardWall(col, row)) break;
+          danger.add(cellKey(col, row));
+          if (this.state.softBlocks.has(cellKey(col, row))) break;
+        }
+      }
+    };
+    this.state.bombs.forEach((b) => addBlast(b.col, b.row, b.range));
+    if (extraBomb) addBlast(extraBomb.col, extraBomb.row, extraBomb.range);
+    return danger;
+  }
+
+  // 通行可能かつ（任意で）危険でないセルか
+  private botWalkable(col: number, row: number): boolean {
+    const { cols, rows } = this.state;
+    if (col < 0 || row < 0 || col >= cols || row >= rows) return false;
+    if (this.isHardWall(col, row)) return false;
+    if (this.state.softBlocks.has(cellKey(col, row))) return false;
+    if (this.bombAt(col, row)) return false;
+    return true;
+  }
+
+  // BFS で start から、cond を満たすセルまでの最短経路（セル配列、start除く）を返す。
+  private bfsTo(
+    startCol: number, startRow: number,
+    cond: (col: number, row: number) => boolean,
+    avoid: Set<string>,
+    maxDepth = 30,
+  ): Array<{ col: number; row: number }> | null {
+    const startKey = cellKey(startCol, startRow);
+    const visited = new Set<string>([startKey]);
+    const queue: Array<{ col: number; row: number; path: Array<{ col: number; row: number }> }> = [
+      { col: startCol, row: startRow, path: [] },
+    ];
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    let head = 0;
+    while (head < queue.length) {
+      const cur = queue[head++];
+      if (cur.path.length > maxDepth) continue;
+      if (cur.path.length > 0 && cond(cur.col, cur.row)) return cur.path;
+      for (const [dc, dr] of dirs) {
+        const nc = cur.col + dc, nr = cur.row + dr;
+        const k = cellKey(nc, nr);
+        if (visited.has(k)) continue;
+        if (!this.botWalkable(nc, nr)) continue;
+        if (avoid.has(k)) continue;
+        visited.add(k);
+        queue.push({ col: nc, row: nr, path: [...cur.path, { col: nc, row: nr }] });
+      }
+    }
+    return null;
+  }
+
+  // 安全なセルへの逃げ経路。afterBomb=true なら「自分が今いるセルに爆弾を置いた後」の危険で判定。
+  private fleePath(col: number, row: number, afterBomb: boolean, range = 1): Array<{ col: number; row: number }> | null {
+    const danger = afterBomb
+      ? this.buildDanger({ col, row, range })
+      : this.buildDanger();
+    if (!danger.has(cellKey(col, row)) && !afterBomb) return [];
+    return this.bfsTo(col, row, (c, r) => !danger.has(cellKey(c, r)), new Set());
+  }
+
+  // CPU の方針決定: 危険回避 > アイテム > 攻撃(プレイヤー隣接で爆弾) > ブロック破壊 > 徘徊
+  private decideBot(p: BPlayer, bot: BotState) {
+    bot.wantBomb = false;
+    const danger = this.buildDanger();
+    const here = cellKey(p.col, p.row);
+
+    // 1) 今いるセルが危険 → 逃げる
+    if (danger.has(here)) {
+      const flee = this.bfsTo(p.col, p.row, (c, r) => !danger.has(cellKey(c, r)), new Set());
+      bot.plan = flee ?? [];
+      return;
+    }
+
+    // 2) アイテムが近ければ取りに行く（危険セルは通らない）
+    const toItem = this.bfsTo(p.col, p.row, (c, r) => {
+      let found = false;
+      this.state.items.forEach((it) => { if (it.col === c && it.row === r) found = true; });
+      return found;
+    }, danger, 8);
+    if (toItem && toItem.length > 0) { bot.plan = toItem; return; }
+
+    // 3) 攻撃: 射程内にプレイヤーがいて、置いても安全に逃げられるなら爆弾
+    if (p.activeBombs < p.maxBombs && this.enemyInBlast(p) && this.fleePath(p.col, p.row, true, p.range)) {
+      bot.wantBomb = true;
+      bot.plan = [];
+      return;
+    }
+
+    // 4) ブロック破壊: 隣に soft があり、置いて逃げられるなら爆弾。無ければ soft の隣へ移動
+    if (p.activeBombs < p.maxBombs && this.softAdjacent(p.col, p.row) && this.fleePath(p.col, p.row, true, p.range)) {
+      bot.wantBomb = true;
+      bot.plan = [];
+      return;
+    }
+    const toSoft = this.bfsTo(p.col, p.row, (c, r) => this.softAdjacent(c, r), danger, 12);
+    if (toSoft && toSoft.length > 0) { bot.plan = toSoft; return; }
+
+    // 5) 敵を追う: 最寄りの生存プレイヤーに隣接するセルへ近づく（射程に捉えに行く）
+    const toEnemy = this.bfsTo(p.col, p.row, (c, r) => this.enemyAdjacent(p, c, r), danger, 20);
+    if (toEnemy && toEnemy.length > 0) { bot.plan = toEnemy; return; }
+
+    // 6) 徘徊: 安全な隣接セルへランダム
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]].sort(() => Math.random() - 0.5);
+    for (const [dc, dr] of dirs) {
+      const nc = p.col + dc, nr = p.row + dr;
+      if (this.botWalkable(nc, nr) && !danger.has(cellKey(nc, nr))) {
+        bot.plan = [{ col: nc, row: nr }];
+        return;
+      }
+    }
+    bot.plan = [];
+  }
+
+  // 自分の爆弾射程内に生存プレイヤー（自分以外）がいるか
+  private enemyInBlast(p: BPlayer): boolean {
+    const dirs = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]];
+    for (const [dc, dr] of dirs) {
+      for (let i = (dc === 0 && dr === 0) ? 0 : 1; i <= p.range; i++) {
+        const col = p.col + dc * i, row = p.row + dr * i;
+        if (i > 0 && this.isHardWall(col, row)) break;
+        if (i > 0 && this.state.softBlocks.has(cellKey(col, row))) break;
+        let hit = false;
+        this.state.players.forEach((o) => {
+          if (o.entityId === p.entityId || !o.alive) return;
+          if (o.col === col && o.row === row) hit = true;
+        });
+        if (hit) return true;
+      }
+    }
+    return false;
+  }
+
+  private softAdjacent(col: number, row: number): boolean {
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    return dirs.some(([dc, dr]) => this.state.softBlocks.has(cellKey(col + dc, row + dr)));
+  }
+
+  // セル(col,row)が、自分以外の生存プレイヤーと同じか隣接しているか（攻撃を仕掛けに行く目標）
+  private enemyAdjacent(self: BPlayer, col: number, row: number): boolean {
+    let hit = false;
+    this.state.players.forEach((o) => {
+      if (o.entityId === self.entityId || !o.alive) return;
+      const d = Math.abs(o.col - col) + Math.abs(o.row - row);
+      if (d <= 1) hit = true;
+    });
+    return hit;
+  }
+
+  // 経路の先頭セルへ向かう1マス分の方向入力を inp に設定。
+  private driveAlongPlan(p: BPlayer, inp: BInput, bot: BotState) {
+    inp.up = inp.down = inp.left = inp.right = false;
+    // 到達済みの先頭を捨てる
+    while (bot.plan.length > 0 && bot.plan[0].col === p.col && bot.plan[0].row === p.row) {
+      bot.plan.shift();
+    }
+    if (bot.plan.length === 0) return;
+    const next = bot.plan[0];
+    const dc = next.col - p.col, dr = next.row - p.row;
+    if (Math.abs(dc) + Math.abs(dr) !== 1) { bot.plan = []; return; } // 隣接でなければ破棄
+    // 進路が塞がれたら破棄して再考
+    if (!this.botWalkable(next.col, next.row)) { bot.plan = []; return; }
+    if (dc === 1) inp.right = true;
+    else if (dc === -1) inp.left = true;
+    else if (dr === 1) inp.down = true;
+    else if (dr === -1) inp.up = true;
   }
 }
 

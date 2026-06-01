@@ -45,6 +45,7 @@ export class BPlayer extends Schema {
   @type("number") score: number = 0; // 勝利数
   @type("boolean") ready: boolean = false;
   @type("number") colorIndex: number = 0;
+  @type("boolean") isBot: boolean = false;
 }
 
 export class BombermanState extends Schema {

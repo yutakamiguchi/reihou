@@ -55,6 +55,8 @@ export class BombermanGameScene extends Phaser.Scene {
   private scoreBox!: Phaser.GameObjects.Container;
   private scoreLines: Phaser.GameObjects.Text[] = [];
   private readyButton!: Phaser.GameObjects.Text;
+  private addCpuButton!: Phaser.GameObjects.Text;
+  private removeCpuButton!: Phaser.GameObjects.Text;
 
   private keys!: {
     W: Phaser.Input.Keyboard.Key; A: Phaser.Input.Keyboard.Key;
@@ -142,6 +144,19 @@ export class BombermanGameScene extends Phaser.Scene {
       this.room.send("ready");
       this.readyButton.setText("準備済み...").disableInteractive();
     });
+
+    // CPU 追加 / 削除（ロビー中のみ表示）
+    this.addCpuButton = this.add.text(width / 2 - 90, height / 2 + 60, "[ ＋CPU ]", {
+      fontSize: "20px", color: "#7ec0e7", backgroundColor: "#222",
+      padding: { x: 12, y: 6 } as any, fontStyle: "bold",
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true }).setDepth(1000);
+    this.addCpuButton.on("pointerdown", () => this.room.send("addBot"));
+
+    this.removeCpuButton = this.add.text(width / 2 + 90, height / 2 + 60, "[ －CPU ]", {
+      fontSize: "20px", color: "#e7a07e", backgroundColor: "#222",
+      padding: { x: 12, y: 6 } as any, fontStyle: "bold",
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true }).setDepth(1000);
+    this.removeCpuButton.on("pointerdown", () => this.room.send("removeBot"));
 
     this.keys = addMoveKeys(this);
     this.keys.SPACE.on("down", () => this.room.send("placeBomb"));
@@ -470,14 +485,18 @@ export class BombermanGameScene extends Phaser.Scene {
     state.players?.forEach((p: any, id: string) => this.updateLabelForPhase(id, p));
 
     if (phase === "lobby") {
-      this.phaseText.setText("LOBBY — 「準備 OK」で開始");
+      this.phaseText.setText("LOBBY — 「準備 OK」or CPUと対戦");
       this.readyButton.setVisible(true).setInteractive({ useHandCursor: true }).setText("[ 準備 OK ]");
+      this.addCpuButton.setVisible(true);
+      this.removeCpuButton.setVisible(true);
     } else if (phase === "playing") {
       this.phaseText.setText("START!");
       this.time.delayedCall(1200, () => {
         if ((this.room.state as any).phase === "playing") this.phaseText.setText("");
       });
       this.readyButton.setVisible(false);
+      this.addCpuButton.setVisible(false);
+      this.removeCpuButton.setVisible(false);
       sfxRoundStart();
       this.players.forEach(v => { v.wasAlive = true; });
     } else if (phase === "ended") {
@@ -487,6 +506,8 @@ export class BombermanGameScene extends Phaser.Scene {
       const msg = alive.length === 1 ? `WINNER: ${alive[0].name}` : "DRAW";
       this.phaseText.setText(msg);
       this.readyButton.setVisible(false);
+      this.addCpuButton.setVisible(false);
+      this.removeCpuButton.setVisible(false);
     }
   }
 
