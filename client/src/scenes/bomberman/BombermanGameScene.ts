@@ -335,15 +335,18 @@ export class BombermanGameScene extends Phaser.Scene {
         pr.x += (ddx / dist) * step;
         pr.y += (ddy / dist) * step;
       }
-      // 移動中だけサーバー位置へ緩く補正（レイテンシ由来の軽微なズレを滑らかに吸収）
-      const drift = Math.hypot(entity.x - pr.x, entity.y - pr.y);
-      if (drift > 1) {
-        const corr = drift > ts ? 0.2 : 0.06;
-        pr.x = Phaser.Math.Linear(pr.x, entity.x, corr);
-        pr.y = Phaser.Math.Linear(pr.y, entity.y, corr);
-      }
+      // サーバー位置への補正はしない。グリッド移動は決定論的で、セル到達ごとに
+      // マス中心へスナップするため累積ズレが起きない。レイテンシ下で補正をかけると
+      // 「古いサーバー位置（後ろ）」へ毎フレーム引き戻され、進めなくなる。
     } else {
-      // 停止中: 自分の居るマス中心へピタッとスナップ（半端な位置に残さない）
+      // 停止中: サーバーも同じセルに落ち着いていて、予測とセルがズレていたら
+      // サーバーのセルへ合わせる（静止時だけ補正＝引き戻しによる足踏みは起きない）。
+      const serverSettled = Math.abs(entity.x - (entity.col * ts + ts / 2)) < 1
+        && Math.abs(entity.y - (entity.row * ts + ts / 2)) < 1;
+      if (serverSettled && (pr.col !== entity.col || pr.row !== entity.row)) {
+        pr.col = entity.col; pr.row = entity.row;
+      }
+      // 自分の居るマス中心へピタッとスナップ（半端な位置に残さない）
       pr.x = pr.col * ts + ts / 2;
       pr.y = pr.row * ts + ts / 2;
     }
