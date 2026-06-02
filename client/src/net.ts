@@ -1,10 +1,22 @@
 import { Client, Room } from "colyseus.js";
+import { supabase } from "./supabase";
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "ws://localhost:2567";
 
 export const client = new Client(SERVER_URL);
 
 export interface JoinResult { room: Room; }
+
+// ログイン中なら Supabase アクセストークンを取得（霊宝ワールドの所有紐づけ用）。
+// 未ログインなら undefined（カジュアル系ゲームはトークン不要）。
+async function authToken(): Promise<string | undefined> {
+  try {
+    const { data } = await supabase.auth.getSession();
+    return data.session?.access_token;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * 無料ホスティングのコールドスタート対策。
@@ -33,7 +45,8 @@ export async function warmUp(onProgress?: (sec: number) => void): Promise<void> 
 // --- ルーム名を引数に取る汎用接続関数（各ミニゲームから利用） ---
 
 export async function joinPublicRoom(roomName: string, name: string): Promise<JoinResult> {
-  const room = await client.joinOrCreate(roomName, { name, code: "" });
+  const token = await authToken();
+  const room = await client.joinOrCreate(roomName, { name, code: "", token });
   await waitForInitialState(room);
   return { room };
 }

@@ -6,6 +6,7 @@ import { BombermanLobbyScene } from "./scenes/bomberman/BombermanLobbyScene";
 import { BombermanGameScene } from "./scenes/bomberman/BombermanGameScene";
 import { MmoLobbyScene } from "./scenes/mmo/MmoLobbyScene";
 import { MmoGameScene } from "./scenes/mmo/MmoGameScene";
+import { LoginScene } from "./scenes/auth/LoginScene";
 
 new Phaser.Game({
   type: Phaser.AUTO,
@@ -15,6 +16,7 @@ new Phaser.Game({
   backgroundColor: "#2a2f3a",
   scene: [
     HubScene,
+    LoginScene,
     UnspottableLobbyScene, UnspottableGameScene,
     BombermanLobbyScene, BombermanGameScene,
     MmoLobbyScene, MmoGameScene,

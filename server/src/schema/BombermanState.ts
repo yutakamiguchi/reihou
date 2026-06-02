@@ -50,6 +50,7 @@ export class BPlayer extends Schema {
   @type("number") lastSeq: number = 0;        // 反映済みの最新入力seq
   @type("number") moveTargetCol: number = -1; // 移動中の目標セル col（-1=移動中でない）
   @type("number") moveTargetRow: number = -1; // 同 row
+  @type("boolean") justWarped: boolean = false; // 直前にワープで着地したセルにいる間 true（再ワープ防止＆reconcile復元用）
 }
 
 export class BombermanState extends Schema {
@@ -61,6 +62,10 @@ export class BombermanState extends Schema {
   @type("number") cols: number = 13;
   @type("number") rows: number = 11;
   @type("number") tileSize: number = 48;
+  // マップレイアウト。row-major の文字列（'#'壁 '.'床 '^v<>'ベルト '0-9'ワープ対）。詳細は maps.ts。
+  @type("string") tiles: string = "";
+  @type("string") mapId: string = "classic"; // 選択中マップID（"random"含む）
+
   @type("string") phase: string = "lobby"; // lobby | playing | ended
   @type("number") timeLeft: number = 0;
   @type("number") roundDuration: number = 120;

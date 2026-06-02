@@ -5,10 +5,10 @@ import Phaser from "phaser";
 export function makeInput(
   scene: Phaser.Scene,
   placeholder: string, maxLen: number, defaultVal: string,
-  x: number, y: number, width = 240,
+  x: number, y: number, width = 240, type: string = "text",
 ): HTMLInputElement {
   const el = document.createElement("input");
-  el.type = "text";
+  el.type = type;
   el.placeholder = placeholder;
   el.maxLength = maxLen;
   el.value = defaultVal;

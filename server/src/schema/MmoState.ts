@@ -35,9 +35,17 @@ export class Mob extends Schema {
   @type("number") hitUntil: number = 0; // 被弾フラッシュ用
 }
 
+// フィールドに湧く霊宝ノード（拾得で在庫から払い出し）。
+export class Relic extends Schema {
+  @type("string") id: string = "";
+  @type("number") x: number = 0;
+  @type("number") y: number = 0;
+}
+
 export class MmoState extends Schema {
   @type({ map: MmoPlayer }) players = new MapSchema<MmoPlayer>();
   @type({ map: Mob }) mobs = new MapSchema<Mob>();
+  @type({ map: Relic }) relics = new MapSchema<Relic>();
   @type("string") phase: string = "world"; // 固定（waitForInitialState 通過用）
   @type("number") mapWidth: number = 2560;
   @type("number") mapHeight: number = 1440;

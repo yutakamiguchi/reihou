@@ -3,6 +3,7 @@ import {
   BombermanState, BPlayer, Bomb, Flame, Item, SoftBlock,
 } from "../../schema/BombermanState";
 import { canStartRound } from "../phase";
+import { getMapById, pickRandomMap, type BombermanMap } from "./maps";
 
 const TICK_RATE = 30;
 const NUM_COLORS = 8;
@@ -35,6 +36,8 @@ export class BombermanRoom extends Room<BombermanState> {
   private inputs = new Map<string, BInput>();
   private moves = new Map<string, BMove | null>();
   private bots = new Map<string, BotState>();
+  // ワープ対のキャッシュ（key=`col_row` → 相手セル）。startRound/onCreate で tiles から構築。
+  private warpPairs = new Map<string, { col: number; row: number }>();
   private botSeq = 0;
   private lastTick = 0;
   private roundEndsAt = 0;
@@ -47,6 +50,7 @@ export class BombermanRoom extends Room<BombermanState> {
     this.setState(new BombermanState());
     this.state.code = (options?.code || "").slice(0, 8);
     if (this.state.code !== "") this.setPrivate(true);
+    this.applyMap(getMapById("classic")!); // 既定マップを反映（tiles/cols/rows/warpPairs 構築）
     this.generateMap();
 
     this.onMessage("input", (client, message: Partial<BInput>) => {
@@ -69,6 +73,16 @@ export class BombermanRoom extends Room<BombermanState> {
       if (!p) return;
       p.ready = true;
       this.maybeStartRound();
+    });
+
+    // マップ選択（ロビー中のみ／既存の＋CPU等に倣い誰でも変更可）。
+    this.onMessage("selectMap", (_client, message: { mapId?: string }) => {
+      if (this.state.phase !== "lobby") return;
+      const id = message?.mapId || "";
+      if (id !== "random" && !getMapById(id)) return; // 不正IDは無視
+      this.state.mapId = id;
+      // random はプレビュー不可なので tiles は据え置き。具象マップならプレビュー反映。
+      if (id !== "random") this.applyMap(getMapById(id)!);
     });
 
     this.onMessage("addBot", () => {
@@ -132,6 +146,39 @@ export class BombermanRoom extends Room<BombermanState> {
   }
 
   // --- マップ生成 ---
+
+  // プリセットマップを state に反映する（tiles/cols/rows/mapId）＋ワープ対を構築。
+  // 注: ベルト('^v<>')/ワープ('0-9')の移動ロジックは未実装（データのみ休眠）。
+  // クラシックの壁判定は従来通り isHardWall（計算式）を使うため挙動は不変。
+  private applyMap(map: BombermanMap) {
+    this.state.mapId = map.id;
+    this.state.cols = map.cols;
+    this.state.rows = map.rows;
+    this.state.tiles = map.tiles;
+    this.buildWarpPairs(map);
+  }
+
+  // tiles 中の数字（同じ数字が2個で1対）からワープ対応表を作る。
+  private buildWarpPairs(map: BombermanMap) {
+    this.warpPairs.clear();
+    const byChar = new Map<string, Array<{ col: number; row: number }>>();
+    for (let row = 0; row < map.rows; row++) {
+      for (let col = 0; col < map.cols; col++) {
+        const ch = map.tiles.charAt(row * map.cols + col);
+        if (ch >= "0" && ch <= "9") {
+          if (!byChar.has(ch)) byChar.set(ch, []);
+          byChar.get(ch)!.push({ col, row });
+        }
+      }
+    }
+    for (const cells of byChar.values()) {
+      if (cells.length === 2) {
+        const [a, b] = cells;
+        this.warpPairs.set(cellKey(a.col, a.row), b);
+        this.warpPairs.set(cellKey(b.col, b.row), a);
+      }
+    }
+  }
 
   private isHardWall(col: number, row: number): boolean {
     const { cols, rows } = this.state;

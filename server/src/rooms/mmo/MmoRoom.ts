@@ -1,5 +1,6 @@
 import { Room, Client } from "colyseus";
-import { MmoState, MmoPlayer, Mob } from "../../schema/MmoState";
+import { MmoState, MmoPlayer, Mob, Relic } from "../../schema/MmoState";
+import { supabaseAdmin, isSupabaseConfigured } from "../../supabase";
 
 const TICK_RATE = 30;
 const PLAYER_SPEED = 140;
@@ -17,6 +18,10 @@ const MOB_AGGRO_RANGE = 260;
 const MOB_TOUCH_RANGE = 28;
 const MOB_TOUCH_DMG_COOLDOWN_MS = 800;
 const PLAYER_RESPAWN_DELAY_MS = 4000;
+const MOB_DROP_CHANCE = 0.5; // mob討伐で霊宝が出る確率（調整可）
+const RELIC_TARGET = 6;            // フィールドに常時湧かせる霊宝ノード数
+const RELIC_PICKUP_RANGE = 30;     // 拾得判定の距離
+const RELIC_SPAWN_COOLDOWN_MS = 4000;
 
 interface InputState {
   up: boolean; down: boolean; left: boolean; right: boolean;
@@ -35,7 +40,11 @@ export class MmoRoom extends Room<MmoState> {
   private inputs = new Map<string, InputState>();
   private mobAI = new Map<string, MobAI>();
   private mobSeq = 0;
+  private relicSeq = 0;
+  private lastRelicSpawnAt = 0;
   private lastTick = 0;
+  // 霊宝の所有を保存する先＝Supabaseのアカウント。sessionId -> profile_id（ゲストは null）
+  private profileIds = new Map<string, string | null>();
 
   onCreate() {
     this.setState(new MmoState());
@@ -64,10 +73,30 @@ export class MmoRoom extends Room<MmoState> {
     this.lastTick = Date.now();
   }
 
-  onJoin(client: Client, options: { name?: string }) {
+  async onJoin(client: Client, options: { name?: string; token?: string }) {
+    // Supabaseアクセストークンを検証し、霊宝の所有を紐づける profile_id を得る。
+    // （クライアント送信の id は信用せず、トークンからサーバーで解決する）
+    let profileId: string | null = null;
+    let displayName = (options?.name || "Player").slice(0, 16);
+    if (options?.token && isSupabaseConfigured) {
+      try {
+        const { data, error } = await supabaseAdmin.auth.getUser(options.token);
+        if (!error && data.user && !data.user.is_anonymous) {
+          profileId = data.user.id;
+          const prof = await supabaseAdmin
+            .from("profiles").select("display_name").eq("id", profileId).single();
+          if (prof.data?.display_name) displayName = prof.data.display_name;
+        }
+      } catch (e: any) {
+        console.warn("[mmo] token検証失敗:", e?.message ?? e);
+      }
+    }
+    this.profileIds.set(client.sessionId, profileId);
+    console.log(`[mmo] join sid=${client.sessionId} profile=${profileId ?? "(guest)"} name=${displayName}`);
+
     const p = new MmoPlayer();
     p.id = client.sessionId;
-    p.name = (options?.name || "Player").slice(0, 16);
+    p.name = displayName;
     p.colorIndex = Math.floor(Math.random() * NUM_COLORS);
     p.level = 1; p.exp = 0; p.nextExp = 20;
     p.maxHp = 100; p.hp = 100; p.atk = 10;
@@ -82,6 +111,7 @@ export class MmoRoom extends Room<MmoState> {
   onLeave(client: Client) {
     this.state.players.delete(client.sessionId);
     this.inputs.delete(client.sessionId);
+    this.profileIds.delete(client.sessionId);
   }
 
   // --- スポーン ---
@@ -195,6 +225,31 @@ export class MmoRoom extends Room<MmoState> {
 
     // mob 補充
     if (this.countAliveMobs() < MOB_TARGET_COUNT) this.spawnMob();
+
+    // 霊宝ノード：拾得判定（サーバー権威）＋補充
+    this.state.relics.forEach((r, rid) => {
+      let picker: MmoPlayer | null = null;
+      this.state.players.forEach((p) => {
+        if (picker || p.dead) return;
+        if (!this.profileIds.get(p.id)) return; // ログイン者のみ拾得
+        if (Math.hypot(p.x - r.x, p.y - r.y) <= RELIC_PICKUP_RANGE) picker = p;
+      });
+      if (picker) {
+        this.state.relics.delete(rid);   // 即削除＝二重取得防止
+        this.grantRelic(picker);          // 在庫から払い出し（async）
+      }
+    });
+    if (this.state.relics.size < RELIC_TARGET && now >= this.lastRelicSpawnAt) {
+      this.spawnRelic();
+      this.lastRelicSpawnAt = now + RELIC_SPAWN_COOLDOWN_MS;
+    }
+  }
+
+  private spawnRelic() {
+    const r = new Relic();
+    r.id = `relic_${this.relicSeq++}`;
+    this.placeRandomly(r);
+    this.state.relics.set(r.id, r);
   }
 
   private countAliveMobs(): number {
@@ -257,6 +312,35 @@ export class MmoRoom extends Room<MmoState> {
     // mob 消滅（次tickで補充）
     this.state.mobs.delete(mobId);
     this.mobAI.delete(mobId);
+
+    // 霊宝ドロップ（在庫から払い出し→撃破者の所有へ）
+    this.tryRelicDrop(attacker);
+  }
+
+  // mob討伐：一定確率で霊宝ドロップ。
+  private tryRelicDrop(attacker: MmoPlayer) {
+    if (Math.random() >= MOB_DROP_CHANCE) return;
+    this.grantRelic(attacker);
+  }
+
+  // 在庫から霊宝を1枚そのプレイヤーの所有へ払い出し、本人に通知する。
+  // 在庫・保存則の更新は explore_pull_for（service_role）に閉じ込める。
+  private grantRelic(player: MmoPlayer) {
+    const profileId = this.profileIds.get(player.id);
+    if (!profileId || !isSupabaseConfigured) return;     // ゲストは払い出し無し
+    const client = this.clients.find((c) => c.sessionId === player.id);
+    void (async () => {
+      try {
+        const { data, error } = await supabaseAdmin.rpc("explore_pull_for", {
+          p_profile: profileId, p_season: 1,
+        });
+        if (error) { console.warn("[mmo] 払い出し失敗:", error.message); return; }
+        if (data == null) return;                          // 在庫切れ
+        client?.send("relicFound", { cardId: data as number });
+      } catch (e: any) {
+        console.warn("[mmo] 払い出し例外:", e?.message ?? e);
+      }
+    })();
   }
 
   private killPlayer(p: MmoPlayer, now: number) {

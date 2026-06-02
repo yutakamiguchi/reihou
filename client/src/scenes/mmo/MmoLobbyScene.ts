@@ -6,12 +6,12 @@ export class MmoLobbyScene extends Phaser.Scene {
 
   create() {
     buildLobby(this, {
-      title: "MMO ワールド",
-      subtitle: "広い世界でモンスターを倒し、レベルを上げよう",
+      title: "霊宝コレクション",
+      subtitle: "広い世界を探索し、限定供給の霊宝を集めよう",
       roomName: "mmo",
       gameSceneKey: "MmoGame",
-      quickLabel: "[ ワールドに入る ]",
-      hint: "操作: WASD/矢印で移動、Space で攻撃  /  モンスターを倒してレベルアップ",
+      quickLabel: "[ 世界に入る ]",
+      hint: "操作: WASD/矢印で移動、Space で攻撃 / モンスター討伐・💎拾得で霊宝入手 / B で台帳",
       enableCode: false,
     });
   }

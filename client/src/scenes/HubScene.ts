@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 import { enableSfx } from "../sfx";
+import { getUser, getMyProfile } from "../auth";
 
 interface GameCard {
   title: string;
@@ -7,6 +8,7 @@ interface GameCard {
   color: number;
   sceneKey: string;
   enabled: boolean;
+  requiresAccount?: boolean; // 本登録アカウント必須（霊宝）
 }
 
 const CARDS: GameCard[] = [
@@ -25,11 +27,12 @@ const CARDS: GameCard[] = [
     enabled: true,
   },
   {
-    title: "MMO",
-    desc: "広い世界でモンスターを\n倒してレベルを上げろ",
-    color: 0x4ca36a,
+    title: "霊宝コレクション",
+    desc: "広い世界を探索し\n限定供給の霊宝を集めよ",
+    color: 0xe8b04b,
     sceneKey: "MmoLobby",
     enabled: true,
+    requiresAccount: true,
   },
 ];
 
@@ -50,10 +53,13 @@ export class HubScene extends Phaser.Scene {
       fontSize: "20px", color: "#cccccc",
     }).setOrigin(0.5);
 
+    // 右上：アカウント状態（クリックでログイン/アカウント画面へ）
+    this.makeAccountStatus(width);
+
     // カードを横並びに配置
-    const cardW = 300;
-    const cardH = 360;
-    const gap = 60;
+    const cardW = 250;
+    const cardH = 340;
+    const gap = 36;
     const totalW = CARDS.length * cardW + (CARDS.length - 1) * gap;
     const startX = (width - totalW) / 2 + cardW / 2;
     const cy = height / 2 + 40;
@@ -99,9 +105,44 @@ export class HubScene extends Phaser.Scene {
       bg.setFillStyle(0x1a1d24);
       container.setScale(1);
     });
-    bg.on("pointerdown", () => {
+    bg.on("pointerdown", async () => {
       enableSfx();
+      if (card.requiresAccount) {
+        const user = await getUser();
+        if (!user || user.is_anonymous) {
+          // 本登録が必要：ログイン画面へ（成功後に当該ゲームへ）
+          this.scene.start("Login", { returnTo: card.sceneKey });
+          return;
+        }
+      }
       this.scene.start(card.sceneKey);
     });
+  }
+
+  // 右上のアカウント状態表示。クリックでログイン/アカウント管理へ。
+  private makeAccountStatus(width: number) {
+    const label = this.add.text(width - 24, 30, "…", {
+      fontSize: "16px", color: "#cccccc", align: "right",
+    }).setOrigin(1, 0).setInteractive({ useHandCursor: true });
+
+    label.on("pointerover", () => label.setColor("#ffffff"));
+    label.on("pointerout", () => label.setColor("#cccccc"));
+    label.on("pointerdown", () => this.scene.start("Login", { returnTo: "Hub" }));
+
+    void (async () => {
+      try {
+        const user = await getUser();
+        if (!user) {
+          label.setText("未ログイン ▸ ログイン");
+        } else if (user.is_anonymous) {
+          label.setText("ゲスト ▸ アカウント作成");
+        } else {
+          const p = await getMyProfile();
+          label.setText(`${p?.display_name ?? user.email ?? "アカウント"} ▸ 管理`);
+        }
+      } catch {
+        label.setText("ログイン");
+      }
+    })();
   }
 }

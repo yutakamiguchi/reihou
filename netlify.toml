@@ -1,0 +1,12 @@
+# Netlify（クライアント=Viteの静的SPA）デプロイ設定。
+# サーバー(Colyseus)は別ホスト(Render/将来は東京へ)。VITE_SERVER_URL で接続先を差し替える。
+[build]
+  base = "client"
+  command = "npm run build"
+  publish = "dist"
+
+# 単一ページなので全パスを index.html へ（直リンク404防止）。
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

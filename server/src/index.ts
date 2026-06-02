@@ -1,3 +1,4 @@
+import "dotenv/config"; // server/.env を読み込む（Renderでは注入済みなので無害）
 import "./polyfills";
 import { Server } from "colyseus";
 import { WebSocketTransport } from "@colyseus/ws-transport";

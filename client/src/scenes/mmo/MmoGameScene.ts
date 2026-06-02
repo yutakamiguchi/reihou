@@ -6,6 +6,8 @@ import {
 } from "../../character";
 import { sfxHitPlayer, sfxHitNpc, sfxScore, sfxFootstep, sfxRoundStart } from "../../sfx";
 import { addMoveKeys } from "../../ui/inputKeys";
+import { fetchCards, fetchMyCards, type Card } from "../../spirit";
+import { CARD_ICON, RARITY_META } from "../spirit/cards-meta";
 
 const PLAYER_SPEED = 140;
 const ENTITY_RADIUS = 14;
@@ -40,8 +42,11 @@ export class MmoGameScene extends Phaser.Scene {
   private myId!: string;
   private players = new Map<string, PlayerView>();
   private mobs = new Map<string, MobView>();
+  private relicViews = new Map<string, Phaser.GameObjects.Container>();
   private worldLayer!: Phaser.GameObjects.Layer;
   private predictReady = false;
+  private cardById = new Map<number, Card>(); // 霊宝メタ（ドロップ表示用）
+  private binderLayer?: Phaser.GameObjects.Container;
 
   // HUD
   private hpBarBg!: Phaser.GameObjects.Rectangle;
@@ -115,14 +120,15 @@ export class MmoGameScene extends Phaser.Scene {
       fontSize: "40px", color: "#ff6666", fontStyle: "bold", stroke: "#000", strokeThickness: 5,
     }).setOrigin(0.5).setScrollFactor(0).setDepth(2000).setVisible(false);
 
-    this.add.text(width - 12, height - 10, "ESC: ハブに戻る", {
+    this.add.text(width - 12, height - 10, "B: 台帳　/　ESC: ハブに戻る", {
       fontSize: "13px", color: "#aaaaaa",
     }).setOrigin(1, 1).setScrollFactor(0).setDepth(1000);
 
     // --- 入力 ---
     this.keys = addMoveKeys(this);
     this.keys.SPACE.on("down", () => this.room.send("attack"));
-    this.input.keyboard!.on("keydown-ESC", () => this.room.leave());
+    this.input.keyboard!.on("keydown-ESC", () => { if (this.binderLayer) this.closeBinder(); else this.room.leave(); });
+    this.input.keyboard!.on("keydown-B", () => this.toggleBinder());
 
     // --- state 購読 ---
     const $ = getStateCallbacks(this.room);
@@ -155,7 +161,123 @@ export class MmoGameScene extends Phaser.Scene {
     });
     $(state).mobs.onRemove((m: any, id: string) => this.removeMobView(id, m));
 
+    $(state).relics.onAdd((r: any, id: string) => this.addRelicView(id, r));
+    $(state).relics.onRemove((_r: any, id: string) => this.removeRelicView(id));
+
     this.room.onLeave(() => this.scene.start("MmoLobby"));
+
+    // 霊宝：カードメタ取得＋ドロップ通知
+    void fetchCards().then((cs) => { this.cardById = new Map(cs.map((c) => [c.id, c])); }).catch(() => {});
+    this.room.onMessage("relicFound", (m: { cardId: number }) => this.showRelicFound(m.cardId));
+  }
+
+  // --- フィールドの霊宝ノード ---
+
+  private addRelicView(id: string, r: any) {
+    const cont = this.add.container(r.x, r.y);
+    const glow = this.add.circle(0, 0, 16, 0xffe066, 0.25);
+    const gem = this.add.text(0, 0, "💎", { fontSize: "26px" }).setOrigin(0.5);
+    cont.add([glow, gem]);
+    cont.setDepth(r.y);
+    this.worldLayer.add(cont);
+    this.tweens.add({ targets: gem, y: -6, duration: 700, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
+    this.tweens.add({ targets: glow, alpha: { from: 0.15, to: 0.4 }, scale: { from: 0.8, to: 1.2 }, duration: 900, yoyo: true, repeat: -1 });
+    this.relicViews.set(id, cont);
+  }
+
+  private removeRelicView(id: string) {
+    const c = this.relicViews.get(id);
+    if (!c) return;
+    this.spawnStarBurst(c.x, c.y); // 拾得演出
+    c.destroy();
+    this.relicViews.delete(id);
+  }
+
+  // mob討伐などで霊宝を入手したときのポップアップ（画面固定）。
+  private showRelicFound(cardId: number) {
+    const c = this.cardById.get(cardId);
+    const meta = c ? RARITY_META[c.rarity] : null;
+    const cx = this.scale.width / 2;
+    const cont = this.add.container(cx, 150).setScrollFactor(0).setDepth(5000);
+    const bg = this.add.rectangle(0, 0, 320, 92, 0x15101f, 0.96).setStrokeStyle(3, meta?.colorNum ?? 0xe8b04b);
+    const icon = this.add.text(-128, 0, CARD_ICON[cardId] ?? "✨", { fontSize: "42px" }).setOrigin(0.5);
+    const title = this.add.text(-92, -18, "✦ 霊宝を発見！", { fontSize: "16px", color: "#e8c87e", fontStyle: "bold" }).setOrigin(0, 0.5);
+    const name = this.add.text(-92, 14, c?.name ?? `#${cardId}`, { fontSize: "22px", color: "#ece7f5", fontStyle: "bold" }).setOrigin(0, 0.5);
+    cont.add([bg, icon, title, name]);
+    cont.setAlpha(0).setScale(0.85);
+    this.tweens.add({ targets: cont, alpha: 1, scale: 1, duration: 250, ease: "Back.easeOut" });
+    sfxScore();
+    this.time.delayedCall(2600, () => {
+      if (!cont.active) return;
+      this.tweens.add({ targets: cont, alpha: 0, y: 130, duration: 300, onComplete: () => cont.destroy() });
+    });
+    if (this.binderLayer) void this.openBinder(); // 開いていれば即反映
+  }
+
+  // --- 台帳パネル（Bキーで開閉。世界内で自分のコレクションを見る）---
+
+  private toggleBinder() {
+    if (this.binderLayer) this.closeBinder();
+    else void this.openBinder();
+  }
+
+  private closeBinder() {
+    this.binderLayer?.destroy();
+    this.binderLayer = undefined;
+  }
+
+  private async openBinder() {
+    const { width, height } = this.scale;
+    this.binderLayer?.destroy();
+    const layer = this.add.container(0, 0).setScrollFactor(0).setDepth(7000);
+    this.binderLayer = layer;
+
+    const backdrop = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.78)
+      .setInteractive(); // 背後クリックを吸収
+    layer.add(backdrop);
+
+    const title = this.add.text(width / 2, 40, "霊宝台帳", { fontSize: "30px", color: "#e8c87e", fontStyle: "bold" }).setOrigin(0.5);
+    const info = this.add.text(width / 2, 74, "読み込み中…", { fontSize: "14px", color: "#9b93b0" }).setOrigin(0.5);
+    const close = this.add.text(width - 30, 30, "✕ 閉じる (B)", { fontSize: "16px", color: "#cccccc" }).setOrigin(1, 0)
+      .setInteractive({ useHandCursor: true });
+    close.on("pointerover", () => close.setColor("#fff"));
+    close.on("pointerout", () => close.setColor("#cccccc"));
+    close.on("pointerdown", () => this.closeBinder());
+    layer.add([title, info, close]);
+
+    try {
+      const [cards, mine] = await Promise.all([fetchCards(), fetchMyCards()]);
+      if (this.binderLayer !== layer) return; // 閉じられた/再描画された
+      const owned = new Map(mine.map((m) => [m.card_id, m.count]));
+      const collected = cards.filter((c) => (owned.get(c.id) ?? 0) > 0).length;
+      info.setText(`蒐集 ${collected} / ${cards.length}`);
+
+      const cols = 8, cellW = 135, cellH = 175, gapX = 8, gapY = 14;
+      const totalW = cols * cellW + (cols - 1) * gapX;
+      const startX = (width - totalW) / 2 + cellW / 2;
+      const startY = 200;
+      cards.forEach((c, i) => {
+        const col = i % cols, row = Math.floor(i / cols);
+        const x = startX + col * (cellW + gapX);
+        const y = startY + row * (cellH + gapY);
+        const count = owned.get(c.id) ?? 0;
+        const has = count > 0;
+        const meta = RARITY_META[c.rarity];
+        const bg = this.add.rectangle(x, y, cellW, cellH, 0x1c1530, has ? 0.98 : 0.5).setStrokeStyle(2, has ? meta.colorNum : 0x3a3550);
+        const icon = this.add.text(x, y - 40, CARD_ICON[c.id] ?? "❔", { fontSize: "40px" }).setOrigin(0.5).setAlpha(has ? 1 : 0.22);
+        const name = this.add.text(x, y + 22, has ? c.name : "？？？", { fontSize: "14px", color: has ? "#ece7f5" : "#4a4360", align: "center", wordWrap: { width: cellW - 16 } }).setOrigin(0.5);
+        const rank = this.add.text(x, y + 56, meta.label, { fontSize: "11px", color: has ? meta.colorStr : "#3a3550" }).setOrigin(0.5);
+        layer.add([bg, icon, name, rank]);
+        if (count > 1) {
+          const badge = this.add.text(x + cellW / 2 - 18, y - cellH / 2 + 12, `×${count}`, {
+            fontSize: "12px", color: "#15101f", fontStyle: "bold", backgroundColor: "#e8b04b", padding: { x: 5, y: 1 } as any,
+          }).setOrigin(0.5);
+          layer.add(badge);
+        }
+      });
+    } catch (e: any) {
+      info.setText(`読み込み失敗: ${e?.message ?? e}`).setColor("#e08a8a");
+    }
   }
 
   update(_t: number, dtMs: number) {
