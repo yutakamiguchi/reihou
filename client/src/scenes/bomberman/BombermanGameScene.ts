@@ -14,6 +14,7 @@ const CHAR_DISPLAY_H = 48;
 const BASE_SPEED = 144;
 const SPEED_PER_LEVEL = 0.22;
 const SNAP_EPS = 2;
+const FIXED_DT = 1 / 30; // サーバーと同じ固定タイムステップ
 
 // 自キャラのローカル予測状態（サーバーのセル移動を再現）。
 interface PredictState {
@@ -22,6 +23,9 @@ interface PredictState {
   dir: number; // 0=下 1=左 2=右 3=上（サーバーと同じ）
   move: { targetCol: number; targetRow: number } | null;
 }
+
+// 送信済みでサーバー未確定の入力（reconcile で再適用する）。
+interface PendingInput { seq: number; up: boolean; down: boolean; left: boolean; right: boolean; }
 
 interface PlayerView {
   container: Phaser.GameObjects.Container;
@@ -65,13 +69,14 @@ export class BombermanGameScene extends Phaser.Scene {
     LEFT: Phaser.Input.Keyboard.Key; RIGHT: Phaser.Input.Keyboard.Key;
     SPACE: Phaser.Input.Keyboard.Key;
   };
-  private lastInputSent = { up: false, down: false, left: false, right: false };
-
   // 押されている方向キーを「押した順」で保持。先に押した方向を優先する。
   private dirOrder: Array<"up" | "down" | "left" | "right"> = [];
 
   // 自キャラのローカル予測。サーバー初回位置で初期化する。
   private predict: PredictState | null = null;
+  private inputSeq = 0;                  // 送信した入力の通し番号
+  private pending: PendingInput[] = [];  // サーバー未確定の入力キュー
+  private predictAccum = 0;              // 固定ステップ用アキュムレータ
 
   constructor() { super("BombermanGame"); }
 
@@ -213,20 +218,29 @@ export class BombermanGameScene extends Phaser.Scene {
     const left = active === "left";
     const right = active === "right";
 
-    if (state.phase === "playing") {
-      const last = this.lastInputSent;
-      if (up !== last.up || down !== last.down || left !== last.left || right !== last.right) {
-        this.lastInputSent = { up, down, left, right };
-        this.room.send("input", this.lastInputSent);
-      }
-    }
-
-    // 自キャラのローカル予測を進める（入力遅延を消す）
     const myEntity: any = state.players.get(this.myId);
-    if (myEntity && state.phase === "playing" && myEntity.alive) {
-      this.stepPredict(myEntity, dtMs, up, down, left, right);
+    const canPredict = myEntity && state.phase === "playing" && myEntity.alive && !myEntity.isBot;
+
+    if (canPredict) {
+      // サーバー確定位置へ予測を再構築し、未確定入力を再適用（リコンシリエーション）
+      this.reconcile(myEntity);
+
+      // 固定タイムステップで予測を進める。各ステップで seq採番→送信→pending積み→即適用。
+      this.predictAccum += Math.min(dtMs, 250) / 1000;
+      let steps = 0;
+      while (this.predictAccum >= FIXED_DT && steps < 5) {
+        this.predictAccum -= FIXED_DT;
+        steps++;
+        const seq = ++this.inputSeq;
+        const cmd: PendingInput = { seq, up, down, left, right };
+        this.pending.push(cmd);
+        this.room.send("input", cmd);
+        this.applyStep(this.predict!, cmd, myEntity.speed);
+      }
     } else {
-      this.predict = null; // 死亡/非プレイ中は予測を解除しサーバー位置に従う
+      this.predict = null;       // 死亡/非プレイ/bot は予測せずサーバー位置に従う
+      this.pending = [];
+      this.predictAccum = 0;
     }
 
     state.players.forEach((p: any, id: string) => {
@@ -296,32 +310,38 @@ export class BombermanGameScene extends Phaser.Scene {
     this.refreshScoreboard();
   }
 
-  // --- クライアント予測（サーバーの movePlayer を再現） ---
+  // --- クライアント予測（サーバーリコンシリエーション） ---
 
-  private stepPredict(
-    entity: any, dtMs: number,
-    up: boolean, down: boolean, left: boolean, right: boolean,
-  ) {
+  // サーバー確定状態から予測を再構築し、未確定入力(pending)を固定ステップで再適用する。
+  // これにより平常時は予測とサーバーが完全一致し、ズレ＝テレポートが起きない。
+  private reconcile(entity: any) {
+    // 確定状態で予測を作り直す
+    this.predict = {
+      col: entity.col, row: entity.row,
+      x: entity.x, y: entity.y, dir: entity.dir,
+      move: entity.moveTargetCol >= 0
+        ? { targetCol: entity.moveTargetCol, targetRow: entity.moveTargetRow }
+        : null,
+    };
+    // サーバーが処理済みの入力を pending から破棄
+    this.pending = this.pending.filter((c) => c.seq > entity.lastSeq);
+    // 残りの未確定入力を順に再適用
+    for (const c of this.pending) this.applyStep(this.predict, c, entity.speed);
+  }
+
+  // 固定タイムステップ1回ぶんの移動を予測状態に適用する。
+  // サーバー movePlayer と同一ロジック（速度・SNAP_EPS・到達スナップ）でなければならない。
+  private applyStep(pr: PredictState, cmd: PendingInput, speedLevel: number) {
     const ts = this.ts;
-    // 初回、または死亡/リスポーン級の大きなズレ（3マス超）だけ即ワープで再同期。
-    // 通常の小さなズレ（レイテンシ由来）はワープせず、後段で緩く吸収する。
-    if (!this.predict || Math.hypot(this.predict.x - entity.x, this.predict.y - entity.y) > ts * 3) {
-      this.predict = {
-        col: entity.col, row: entity.row,
-        x: entity.x, y: entity.y, dir: entity.dir, move: null,
-      };
-    }
-    const pr = this.predict;
-    const dt = Math.min(dtMs, 50) / 1000;
-    const hasInput = up || down || left || right;
+    const hasInput = cmd.up || cmd.down || cmd.left || cmd.right;
 
     // 移動中でなく、入力があれば次の目標セルを決める
     if (!pr.move && hasInput) {
       let dc = 0, dr = 0, dir = pr.dir;
-      if (up) { dr = -1; dir = 3; }
-      else if (down) { dr = 1; dir = 0; }
-      else if (left) { dc = -1; dir = 1; }
-      else if (right) { dc = 1; dir = 2; }
+      if (cmd.up) { dr = -1; dir = 3; }
+      else if (cmd.down) { dr = 1; dir = 0; }
+      else if (cmd.left) { dc = -1; dir = 1; }
+      else if (cmd.right) { dc = 1; dir = 2; }
       if (dc !== 0 || dr !== 0) {
         pr.dir = dir;
         const ncol = pr.col + dc, nrow = pr.row + dr;
@@ -329,36 +349,21 @@ export class BombermanGameScene extends Phaser.Scene {
       }
     }
 
-    const speed = BASE_SPEED * (1 + (entity.speed - 1) * SPEED_PER_LEVEL);
-    const step = speed * dt;
-    if (pr.move) {
-      // 移動中: 目標セル中心へ進む
-      const tx = pr.move.targetCol * ts + ts / 2;
-      const ty = pr.move.targetRow * ts + ts / 2;
-      const ddx = tx - pr.x, ddy = ty - pr.y;
-      const dist = Math.hypot(ddx, ddy);
-      if (dist <= step + SNAP_EPS) {
-        pr.x = tx; pr.y = ty;
-        pr.col = pr.move.targetCol; pr.row = pr.move.targetRow;
-        pr.move = null;
-      } else {
-        pr.x += (ddx / dist) * step;
-        pr.y += (ddy / dist) * step;
-      }
-      // サーバー位置への補正はしない。グリッド移動は決定論的で、セル到達ごとに
-      // マス中心へスナップするため累積ズレが起きない。レイテンシ下で補正をかけると
-      // 「古いサーバー位置（後ろ）」へ毎フレーム引き戻され、進めなくなる。
+    if (!pr.move) return;
+
+    const tx = pr.move.targetCol * ts + ts / 2;
+    const ty = pr.move.targetRow * ts + ts / 2;
+    const speed = BASE_SPEED * (1 + (speedLevel - 1) * SPEED_PER_LEVEL);
+    const step = speed * FIXED_DT;
+    const ddx = tx - pr.x, ddy = ty - pr.y;
+    const dist = Math.hypot(ddx, ddy);
+    if (dist <= step + SNAP_EPS) {
+      pr.x = tx; pr.y = ty;
+      pr.col = pr.move.targetCol; pr.row = pr.move.targetRow;
+      pr.move = null;
     } else {
-      // 停止中: サーバーも同じセルに落ち着いていて、予測とセルがズレていたら
-      // サーバーのセルへ合わせる（静止時だけ補正＝引き戻しによる足踏みは起きない）。
-      const serverSettled = Math.abs(entity.x - (entity.col * ts + ts / 2)) < 1
-        && Math.abs(entity.y - (entity.row * ts + ts / 2)) < 1;
-      if (serverSettled && (pr.col !== entity.col || pr.row !== entity.row)) {
-        pr.col = entity.col; pr.row = entity.row;
-      }
-      // 自分の居るマス中心へピタッとスナップ（半端な位置に残さない）
-      pr.x = pr.col * ts + ts / 2;
-      pr.y = pr.row * ts + ts / 2;
+      pr.x += (ddx / dist) * step;
+      pr.y += (ddy / dist) * step;
     }
   }
 

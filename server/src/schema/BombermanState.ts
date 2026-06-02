@@ -46,6 +46,10 @@ export class BPlayer extends Schema {
   @type("boolean") ready: boolean = false;
   @type("number") colorIndex: number = 0;
   @type("boolean") isBot: boolean = false;
+  // --- クライアント予測のサーバーリコンシリエーション用 ---
+  @type("number") lastSeq: number = 0;        // 反映済みの最新入力seq
+  @type("number") moveTargetCol: number = -1; // 移動中の目標セル col（-1=移動中でない）
+  @type("number") moveTargetRow: number = -1; // 同 row
 }
 
 export class BombermanState extends Schema {

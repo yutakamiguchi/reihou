@@ -13,12 +13,14 @@ const SPEED_PER_LEVEL = 0.22; // speed スタック1段あたりの加速率
 const SOFT_BLOCK_RATIO = 0.72; // 空きセルに soft を置く確率
 const ITEM_DROP_CHANCE = 0.32;
 const SNAP_EPS = 2;           // セル中心への到達判定（px）
+const FIXED_DT = 1 / TICK_RATE; // 移動は固定タイムステップで進める（予測と一致させる）
+const MAX_STEPS = 5;          // 1updateで消化する最大固定ステップ数（暴走防止）
 
 const MAX_SLOTS = 4;          // プレイヤー＋CPU の合計上限
 const BOT_THINK_MS = 220;     // CPU が方針を再考する間隔
 const BOT_NAMES = ["CPU-A", "CPU-B", "CPU-C", "CPU-D"];
 
-interface BInput { up: boolean; down: boolean; left: boolean; right: boolean; }
+interface BInput { up: boolean; down: boolean; left: boolean; right: boolean; seq: number; }
 interface BMove { targetCol: number; targetRow: number; } // 移動中の目標セル（サーバー内部のみ）
 
 // CPU の思考状態（サーバー内部のみ）
@@ -39,6 +41,7 @@ export class BombermanRoom extends Room<BombermanState> {
   private bombSeq = 0;
   private flameSeq = 0;
   private itemSeq = 0;
+  private accumulator = 0; // 固定タイムステップ用の時間アキュムレータ
 
   onCreate(options: { code?: string }) {
     this.setState(new BombermanState());
@@ -53,6 +56,8 @@ export class BombermanRoom extends Room<BombermanState> {
       inp.down = !!message.down;
       inp.left = !!message.left;
       inp.right = !!message.right;
+      // 受信した最新の入力シーケンス番号（reconcile の基準。人間プレイヤーのみ送ってくる）
+      if (typeof message.seq === "number" && message.seq > inp.seq) inp.seq = message.seq;
     });
 
     this.onMessage("placeBomb", (client) => {
@@ -92,7 +97,7 @@ export class BombermanRoom extends Room<BombermanState> {
     const spawn = this.spawnCellFor(this.state.players.size);
     this.placePlayerAtCell(p, spawn.col, spawn.row);
     this.state.players.set(client.sessionId, p);
-    this.inputs.set(client.sessionId, { up: false, down: false, left: false, right: false });
+    this.inputs.set(client.sessionId, { up: false, down: false, left: false, right: false, seq: 0 });
     this.moves.set(client.sessionId, null);
   }
 
@@ -121,7 +126,7 @@ export class BombermanRoom extends Room<BombermanState> {
     const spawn = this.spawnCellFor(this.state.players.size);
     this.placePlayerAtCell(p, spawn.col, spawn.row);
     this.state.players.set(id, p);
-    this.inputs.set(id, { up: false, down: false, left: false, right: false });
+    this.inputs.set(id, { up: false, down: false, left: false, right: false, seq: 0 });
     this.moves.set(id, null);
     this.bots.set(id, { nextThinkAt: 0, plan: [], wantBomb: false });
   }
@@ -246,20 +251,26 @@ export class BombermanRoom extends Room<BombermanState> {
 
   private update(_dt: number) {
     const now = Date.now();
-    const dt = (now - this.lastTick) / 1000;
+    const frameDt = (now - this.lastTick) / 1000;
     this.lastTick = now;
 
-    if (this.state.phase !== "playing") return;
+    if (this.state.phase !== "playing") {
+      this.accumulator = 0; // ロビー等で溜めない（開始時の一気消化＝ワープ防止）
+      return;
+    }
 
     this.state.timeLeft = Math.max(0, (this.roundEndsAt - now) / 1000);
 
-    // CPU 思考（入力を埋める）
-    this.state.players.forEach((p, sid) => {
-      if (p.isBot && p.alive) this.thinkBot(p, sid, now);
-    });
-
-    // プレイヤー移動
-    this.state.players.forEach((p, sid) => this.movePlayer(p, sid, dt));
+    // --- 移動・入力消費は固定タイムステップで（予測と完全一致させる） ---
+    this.accumulator += frameDt;
+    let steps = 0;
+    while (this.accumulator >= FIXED_DT && steps < MAX_STEPS) {
+      this.accumulator -= FIXED_DT;
+      steps++;
+      this.fixedStep(now);
+    }
+    // スパイク時（タブ停止/GC）に溜まりすぎた分は捨てる（巻き取りワープ防止）
+    if (this.accumulator > FIXED_DT * MAX_STEPS) this.accumulator = 0;
 
     // 爆弾タイマー
     const toExplode: Bomb[] = [];
@@ -290,12 +301,23 @@ export class BombermanRoom extends Room<BombermanState> {
     }
   }
 
+  // 固定タイムステップ1回分: CPU思考 → 入力反映 → 全プレイヤー移動。
+  private fixedStep(now: number) {
+    this.state.players.forEach((p, sid) => {
+      if (p.isBot && p.alive) this.thinkBot(p, sid, now);
+    });
+    this.state.players.forEach((p, sid) => this.movePlayer(p, sid, FIXED_DT));
+  }
+
   private movePlayer(p: BPlayer, sid: string, dt: number) {
     if (!p.alive) return;
     const ts = this.state.tileSize;
     const inp = this.inputs.get(sid);
     const hasInput = !!(inp && (inp.up || inp.down || inp.left || inp.right));
     let mv = this.moves.get(sid) ?? null;
+
+    // この固定ステップ時点で反映済みの入力seqを記録（reconcile基準。bot は seq=0）
+    if (inp) p.lastSeq = inp.seq;
 
     // 移動中でなく、入力があれば次の目標セルを決める
     if (!mv && hasInput && inp) {
@@ -314,6 +336,10 @@ export class BombermanRoom extends Room<BombermanState> {
       }
     }
 
+    // 移動中状態を state にミラー（クライアントが reconcile で再現するため）
+    p.moveTargetCol = mv ? mv.targetCol : -1;
+    p.moveTargetRow = mv ? mv.targetRow : -1;
+
     // 移動中なら、入力が切れても目標セルまで進みきってから止まる（戻らない）
     if (!mv) return;
 
@@ -328,6 +354,7 @@ export class BombermanRoom extends Room<BombermanState> {
       p.x = tx; p.y = ty;
       p.col = mv.targetCol; p.row = mv.targetRow;
       this.moves.set(sid, null); // 到達。次tickで次方向を受付
+      p.moveTargetCol = -1; p.moveTargetRow = -1;
     } else {
       p.x += (ddx / dist) * step;
       p.y += (ddy / dist) * step;
