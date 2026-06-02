@@ -9,7 +9,7 @@
     "postinstall": "echo skip"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
     "@colyseus/schema": "^3.0.0",
