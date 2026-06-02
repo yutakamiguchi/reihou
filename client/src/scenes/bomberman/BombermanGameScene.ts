@@ -114,7 +114,7 @@ export class BombermanGameScene extends Phaser.Scene {
     this.offsetX = Math.floor((width - gridW) / 2);
     this.offsetY = Math.floor((height - gridH) / 2) + 20;
 
-    this.add.rectangle(width / 2, height / 2, width, height, 0x2a2f3a);
+    this.add.rectangle(width / 2, height / 2, width, height, 0x2a2f3a).setDepth(-10);
 
     this.buildWarpPairs();
     this.rebuildGrid(); // tiles から壁・ベルト・ワープを描画
