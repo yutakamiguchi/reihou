@@ -1,6 +1,13 @@
 import { Room, Client } from "colyseus";
 import { MmoState, MmoPlayer, Mob, Relic } from "../../schema/MmoState";
-import { supabaseAdmin, isSupabaseConfigured } from "../../supabase";
+import { supabaseAdmin, isSupabaseConfigured, loadGameStats, saveGameStats } from "../../supabase";
+
+const SPIRIT_GAME_KEY = "spirit"; // game_stats のキー（霊宝の世界の進行）
+
+// レベルから派生ステータスを算出（level-up 式と一致させること）
+function nextExpFor(level: number) { return 20 + (level - 1) * 15; }
+function maxHpFor(level: number) { return 100 + (level - 1) * 20; }
+function atkFor(level: number) { return 10 + (level - 1) * 3; }
 
 const TICK_RATE = 30;
 const PLAYER_SPEED = 140;
@@ -100,6 +107,20 @@ export class MmoRoom extends Room<MmoState> {
     p.colorIndex = Math.floor(Math.random() * NUM_COLORS);
     p.level = 1; p.exp = 0; p.nextExp = 20;
     p.maxHp = 100; p.hp = 100; p.atk = 10;
+
+    // 保存済みの進行を復元（ログイン者のみ）
+    if (profileId && isSupabaseConfigured) {
+      const s = await loadGameStats(profileId, SPIRIT_GAME_KEY);
+      if (s && typeof s.level === "number" && s.level >= 1) {
+        p.level = s.level;
+        p.exp = typeof s.exp === "number" ? s.exp : 0;
+        p.nextExp = nextExpFor(p.level);
+        p.maxHp = maxHpFor(p.level);
+        p.atk = atkFor(p.level);
+        p.hp = p.maxHp;
+      }
+    }
+
     this.placeRandomly(p);
     this.state.players.set(client.sessionId, p);
     this.inputs.set(client.sessionId, {
@@ -109,9 +130,18 @@ export class MmoRoom extends Room<MmoState> {
   }
 
   onLeave(client: Client) {
+    const p = this.state.players.get(client.sessionId);
+    if (p) this.persistStats(p); // 退出時に進行を保存
     this.state.players.delete(client.sessionId);
     this.inputs.delete(client.sessionId);
     this.profileIds.delete(client.sessionId);
+  }
+
+  // ログイン者ならレベル/EXPを game_stats に保存（fire-and-forget）。
+  private persistStats(p: MmoPlayer) {
+    const pid = this.profileIds.get(p.id);
+    if (!pid || !isSupabaseConfigured) return;
+    void saveGameStats(pid, SPIRIT_GAME_KEY, { level: p.level, exp: p.exp });
   }
 
   // --- スポーン ---
@@ -300,6 +330,7 @@ export class MmoRoom extends Room<MmoState> {
   private onMobKilled(attacker: MmoPlayer, mobId: string, mob: Mob) {
     // EXP 付与
     const gain = 5 + mob.level * 3;
+    const oldLevel = attacker.level;
     attacker.exp += gain;
     while (attacker.exp >= attacker.nextExp) {
       attacker.exp -= attacker.nextExp;
@@ -309,6 +340,7 @@ export class MmoRoom extends Room<MmoState> {
       attacker.hp = attacker.maxHp; // レベルアップで全回復
       attacker.nextExp = 20 + (attacker.level - 1) * 15;
     }
+    if (attacker.level > oldLevel) this.persistStats(attacker); // レベルアップ時に保存
     // mob 消滅（次tickで補充）
     this.state.mobs.delete(mobId);
     this.mobAI.delete(mobId);
