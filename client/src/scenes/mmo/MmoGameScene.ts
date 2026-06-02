@@ -8,6 +8,7 @@ import { sfxHitPlayer, sfxHitNpc, sfxScore, sfxFootstep, sfxRoundStart } from ".
 import { addMoveKeys } from "../../ui/inputKeys";
 import { fetchCards, fetchMyCards, type Card } from "../../spirit";
 import { CARD_ICON, RARITY_META } from "../spirit/cards-meta";
+import { getMyProfile, getUser } from "../../auth";
 
 const PLAYER_SPEED = 140;
 const ENTITY_RADIUS = 14;
@@ -47,6 +48,7 @@ export class MmoGameScene extends Phaser.Scene {
   private predictReady = false;
   private cardById = new Map<number, Card>(); // 霊宝メタ（ドロップ表示用）
   private binderLayer?: Phaser.GameObjects.Container;
+  private statusLayer?: Phaser.GameObjects.Container;
 
   // HUD
   private hpBarBg!: Phaser.GameObjects.Rectangle;
@@ -120,15 +122,20 @@ export class MmoGameScene extends Phaser.Scene {
       fontSize: "40px", color: "#ff6666", fontStyle: "bold", stroke: "#000", strokeThickness: 5,
     }).setOrigin(0.5).setScrollFactor(0).setDepth(2000).setVisible(false);
 
-    this.add.text(width - 12, height - 10, "B: 台帳　/　ESC: ハブに戻る", {
+    this.add.text(width - 12, height - 10, "B: 台帳　/　C: ステータス　/　ESC: ハブに戻る", {
       fontSize: "13px", color: "#aaaaaa",
     }).setOrigin(1, 1).setScrollFactor(0).setDepth(1000);
 
     // --- 入力 ---
     this.keys = addMoveKeys(this);
     this.keys.SPACE.on("down", () => this.room.send("attack"));
-    this.input.keyboard!.on("keydown-ESC", () => { if (this.binderLayer) this.closeBinder(); else this.room.leave(); });
+    this.input.keyboard!.on("keydown-ESC", () => {
+      if (this.statusLayer) this.closeStatus();
+      else if (this.binderLayer) this.closeBinder();
+      else this.room.leave();
+    });
     this.input.keyboard!.on("keydown-B", () => this.toggleBinder());
+    this.input.keyboard!.on("keydown-C", () => this.toggleStatus());
 
     // --- state 購読 ---
     const $ = getStateCallbacks(this.room);
@@ -214,9 +221,101 @@ export class MmoGameScene extends Phaser.Scene {
     if (this.binderLayer) void this.openBinder(); // 開いていれば即反映
   }
 
+  // --- ステータスパネル（Cキー。蒐集進捗＋RPG＋アカウント情報）---
+
+  private toggleStatus() {
+    if (this.statusLayer) this.closeStatus();
+    else void this.openStatus();
+  }
+
+  private closeStatus() {
+    this.statusLayer?.destroy();
+    this.statusLayer = undefined;
+  }
+
+  private async openStatus() {
+    this.closeBinder(); // 同時には開かない
+    const { width, height } = this.scale;
+    this.statusLayer?.destroy();
+    const layer = this.add.container(0, 0).setScrollFactor(0).setDepth(7000);
+    this.statusLayer = layer;
+    const T = (x: number, y: number, t: string, size: number, color: string, bold = false) => {
+      const o = this.add.text(x, y, t, { fontSize: `${size}px`, color, fontStyle: bold ? "bold" : "normal" });
+      layer.add(o); return o;
+    };
+
+    layer.add(this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.8).setInteractive());
+    T(width / 2, 34, "ステータス", 30, "#e8c87e", true).setOrigin(0.5);
+    const close = T(width - 30, 30, "✕ 閉じる (C)", 16, "#cccccc").setOrigin(1, 0).setInteractive({ useHandCursor: true });
+    close.on("pointerover", () => close.setColor("#fff"));
+    close.on("pointerout", () => close.setColor("#cccccc"));
+    close.on("pointerdown", () => this.closeStatus());
+
+    // RPGステータス（state からライブ取得）
+    const me: any = (this.room.state as any).players.get(this.myId);
+    const leftX = width / 2 - 300, rightX = width / 2 + 30;
+
+    T(leftX, 100, "▸ アカウント", 18, "#7ee787", true);
+    const acc = T(leftX, 132, "読み込み中…", 16, "#ece7f5");
+
+    T(leftX, 250, "▸ RPGステータス", 18, "#7ee787", true);
+    if (me) {
+      T(leftX, 282, `レベル  ${me.level}`, 16, "#ece7f5");
+      T(leftX, 308, `EXP    ${me.exp} / ${me.nextExp}`, 16, "#ece7f5");
+      T(leftX, 334, `HP     ${me.hp} / ${me.maxHp}`, 16, "#ece7f5");
+      T(leftX, 360, `ATK    ${me.atk}`, 16, "#ece7f5");
+    } else {
+      T(leftX, 282, "（世界に入ると表示）", 14, "#9b93b0");
+    }
+    T(leftX, 400, "※ レベル等は現状サーバー再起動でリセット（永続化は未実装）", 12, "#6a6285");
+
+    T(rightX, 100, "▸ 蒐集進捗", 18, "#7ee787", true);
+    const col = T(rightX, 132, "読み込み中…", 16, "#ece7f5");
+
+    try {
+      const [cards, mine, profile, user] = await Promise.all([
+        fetchCards(), fetchMyCards(), getMyProfile(), getUser(),
+      ]);
+      if (this.statusLayer !== layer) return;
+
+      const created = profile?.created_at ? new Date(profile.created_at).toLocaleDateString("ja-JP") : "-";
+      acc.setText(
+        `表示名 : ${profile?.display_name ?? "-"}\n` +
+        `メール : ${user?.email ?? "(ゲスト)"}\n` +
+        `登録日 : ${created}`
+      ).setLineSpacing(8);
+
+      const owned = new Map(mine.map((m) => [m.card_id, m.count]));
+      const rar: Record<string, { have: number; total: number }> = {
+        common: { have: 0, total: 0 }, rare: { have: 0, total: 0 }, legend: { have: 0, total: 0 },
+      };
+      let ownedTotal = 0, dup = 0;
+      cards.forEach((c) => {
+        rar[c.rarity].total++;
+        const n = owned.get(c.id) ?? 0;
+        if (n > 0) rar[c.rarity].have++;
+        ownedTotal += n;
+        if (n > 1) dup += n - 1;
+      });
+      const collected = rar.common.have + rar.rare.have + rar.legend.have;
+      const total = cards.length;
+      col.setText(
+        `蒐集     ${collected} / ${total} 種\n\n` +
+        `${RARITY_META.common.label}   ${rar.common.have} / ${rar.common.total}\n` +
+        `${RARITY_META.rare.label}   ${rar.rare.have} / ${rar.rare.total}\n` +
+        `${RARITY_META.legend.label}   ${rar.legend.have} / ${rar.legend.total}\n\n` +
+        `所持総数 ${ownedTotal} 枚（重複 ${dup}）\n\n` +
+        `（一覧は B キーの台帳で）`
+      ).setLineSpacing(8);
+    } catch (e: any) {
+      if (this.statusLayer === layer) col.setText(`読み込み失敗: ${e?.message ?? e}`).setColor("#e08a8a");
+    }
+  }
+
   // --- 台帳パネル（Bキーで開閉。世界内で自分のコレクションを見る）---
 
   private toggleBinder() {
+    if (this.statusLayer) this.closeStatus(); // 同時には開かない
     if (this.binderLayer) this.closeBinder();
     else void this.openBinder();
   }
