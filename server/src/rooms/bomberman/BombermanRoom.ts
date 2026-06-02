@@ -147,15 +147,50 @@ export class BombermanRoom extends Room<BombermanState> {
 
   // --- マップ生成 ---
 
-  // プリセットマップを state に反映する（tiles/cols/rows/mapId）＋ワープ対を構築。
-  // 注: ベルト('^v<>')/ワープ('0-9')の移動ロジックは未実装（データのみ休眠）。
-  // クラシックの壁判定は従来通り isHardWall（計算式）を使うため挙動は不変。
+  // プリセットマップの tiles/cols/rows を state に反映＋ワープ対を構築する。
+  // mapId（選択状態。"random"含む）はここでは触らない（呼び出し側が管理）。
   private applyMap(map: BombermanMap) {
-    this.state.mapId = map.id;
     this.state.cols = map.cols;
     this.state.rows = map.rows;
     this.state.tiles = map.tiles;
     this.buildWarpPairs(map);
+  }
+
+  // 指定セルの tiles 文字（'#'壁 / '.'床 / '^v<>'ベルト / '0-9'ワープ）。範囲外は壁扱い。
+  private tileAt(col: number, row: number): string {
+    const { cols, rows, tiles } = this.state;
+    if (col < 0 || row < 0 || col >= cols || row >= rows) return "#";
+    if (tiles.length !== cols * rows) return ".";
+    return tiles.charAt(row * cols + col);
+  }
+
+  // ベルト文字 → 移動量と向き（dir: 0下/1左/2右/3上）。ベルトでなければ null。
+  private beltDir(ch: string): { dc: number; dr: number; dir: number } | null {
+    switch (ch) {
+      case "^": return { dc: 0, dr: -1, dir: 3 };
+      case "v": return { dc: 0, dr: 1, dir: 0 };
+      case "<": return { dc: -1, dr: 0, dir: 1 };
+      case ">": return { dc: 1, dr: 0, dir: 2 };
+      default: return null;
+    }
+  }
+
+  // セル到達時のワープ処理。ワープ上かつ未ワープなら対へテレポート（justWarpedで跳ね返り防止）。
+  private handleWarp(p: BPlayer) {
+    const here = this.tileAt(p.col, p.row);
+    if (here >= "0" && here <= "9") {
+      if (!p.justWarped) {
+        const pair = this.warpPairs.get(cellKey(p.col, p.row));
+        if (pair) {
+          p.col = pair.col; p.row = pair.row;
+          p.x = pair.col * this.state.tileSize + this.state.tileSize / 2;
+          p.y = pair.row * this.state.tileSize + this.state.tileSize / 2;
+          p.justWarped = true;
+        }
+      }
+    } else {
+      p.justWarped = false; // ワープ外に出たら再ワープ可能に戻す
+    }
   }
 
   // tiles 中の数字（同じ数字が2個で1対）からワープ対応表を作る。
@@ -203,7 +238,7 @@ export class BombermanRoom extends Room<BombermanState> {
     const { cols, rows } = this.state;
     for (let row = 1; row < rows - 1; row++) {
       for (let col = 1; col < cols - 1; col++) {
-        if (this.isHardWall(col, row)) continue;
+        if (this.tileAt(col, row) !== ".") continue; // 壁・ベルト・ワープには置かない
         if (this.isSpawnSafe(col, row)) continue;
         if (Math.random() < SOFT_BLOCK_RATIO) {
           const sb = new SoftBlock();
@@ -246,6 +281,12 @@ export class BombermanRoom extends Room<BombermanState> {
     this.state.bombs.clear();
     this.state.flames.clear();
     this.state.items.clear();
+
+    // マップ確定（"random" はここで具象マップへ。mapId=選択状態は保持）
+    const actual = this.state.mapId === "random"
+      ? pickRandomMap()
+      : (getMapById(this.state.mapId) ?? getMapById("classic")!);
+    this.applyMap(actual);
     this.generateMap();
 
     let i = 0;
@@ -257,6 +298,7 @@ export class BombermanRoom extends Room<BombermanState> {
       p.activeBombs = 0;
       p.range = 1;
       p.speed = 1;
+      p.justWarped = false;
       this.moves.set(p.entityId, null);
     });
   }
@@ -383,6 +425,19 @@ export class BombermanRoom extends Room<BombermanState> {
       }
     }
 
+    // ベルト：入力が無く、ベルト上にいるなら矢印方向へ1マス（連続コンベア）。入力時はプレイヤー優先。
+    if (!mv && !hasInput) {
+      const b = this.beltDir(this.tileAt(p.col, p.row));
+      if (b) {
+        p.dir = b.dir;
+        const ncol = p.col + b.dc, nrow = p.row + b.dr;
+        if (this.isPassable(ncol, nrow)) {
+          mv = { targetCol: ncol, targetRow: nrow };
+          this.moves.set(sid, mv);
+        }
+      }
+    }
+
     // 移動中状態を state にミラー（クライアントが reconcile で再現するため）
     p.moveTargetCol = mv ? mv.targetCol : -1;
     p.moveTargetRow = mv ? mv.targetRow : -1;
@@ -402,6 +457,7 @@ export class BombermanRoom extends Room<BombermanState> {
       p.col = mv.targetCol; p.row = mv.targetRow;
       this.moves.set(sid, null); // 到達。次tickで次方向を受付
       p.moveTargetCol = -1; p.moveTargetRow = -1;
+      this.handleWarp(p); // ワープ上ならテレポート
     } else {
       p.x += (ddx / dist) * step;
       p.y += (ddy / dist) * step;

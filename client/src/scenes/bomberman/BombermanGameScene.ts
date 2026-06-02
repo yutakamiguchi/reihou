@@ -10,6 +10,15 @@ import { addMoveKeys } from "../../ui/inputKeys";
 
 const CHAR_DISPLAY_H = 48;
 
+// ロビーで選べるマップ（server/maps.ts の MAP_IDS と一致させる）。
+const MAP_CHOICES: Array<{ id: string; name: string }> = [
+  { id: "classic", name: "クラシック" },
+  { id: "belts", name: "ベルト" },
+  { id: "warps", name: "ワープ" },
+  { id: "mixed", name: "ミックス" },
+  { id: "random", name: "ランダム" },
+];
+
 // サーバー(BombermanRoom)と一致させる移動パラメータ。クライアント予測で使用。
 const BASE_SPEED = 144;
 const SPEED_PER_LEVEL = 0.22;
@@ -22,6 +31,7 @@ interface PredictState {
   x: number; y: number;
   dir: number; // 0=下 1=左 2=右 3=上（サーバーと同じ）
   move: { targetCol: number; targetRow: number } | null;
+  justWarped: boolean; // 直前にワープ着地したセルにいる間 true（再ワープ防止）
 }
 
 // 送信済みでサーバー未確定の入力（reconcile で再適用する）。
@@ -46,6 +56,9 @@ export class BombermanGameScene extends Phaser.Scene {
   private offsetY = 0;
   private ts = 48;
 
+  private warpPairs = new Map<string, { col: number; row: number }>();
+  private gridContainer?: Phaser.GameObjects.Container;
+
   private players = new Map<string, PlayerView>();
   private bombs = new Map<string, Phaser.GameObjects.Container>();
   private flames = new Map<string, Phaser.GameObjects.Rectangle>();
@@ -61,6 +74,8 @@ export class BombermanGameScene extends Phaser.Scene {
   private readyButton!: Phaser.GameObjects.Text;
   private addCpuButton!: Phaser.GameObjects.Text;
   private removeCpuButton!: Phaser.GameObjects.Text;
+  private mapLabel!: Phaser.GameObjects.Text;
+  private mapButtons: Phaser.GameObjects.Text[] = [];
 
   private keys!: {
     W: Phaser.Input.Keyboard.Key; A: Phaser.Input.Keyboard.Key;
@@ -101,18 +116,8 @@ export class BombermanGameScene extends Phaser.Scene {
 
     this.add.rectangle(width / 2, height / 2, width, height, 0x2a2f3a);
 
-    for (let row = 0; row < state.rows; row++) {
-      for (let col = 0; col < state.cols; col++) {
-        const c = this.cellCenter(col, row);
-        if (this.isHardWall(col, row, state.cols, state.rows)) {
-          this.add.rectangle(c.x, c.y, this.ts, this.ts, 0x5a6270).setStrokeStyle(2, 0x3a4150);
-          this.add.rectangle(c.x, c.y - this.ts * 0.18, this.ts, this.ts * 0.3, 0x6e7686, 0.7);
-        } else {
-          const shade = ((col + row) & 1) === 0 ? 0x3c8a4a : 0x46974f;
-          this.add.rectangle(c.x, c.y, this.ts, this.ts, shade);
-        }
-      }
-    }
+    this.buildWarpPairs();
+    this.rebuildGrid(); // tiles から壁・ベルト・ワープを描画
     this.add.rectangle(width / 2, this.offsetY + gridH / 2, gridW + 4, gridH + 4, 0, 0)
       .setStrokeStyle(4, 0x1a1d24);
 
@@ -166,6 +171,22 @@ export class BombermanGameScene extends Phaser.Scene {
     }).setOrigin(0.5).setInteractive({ useHandCursor: true }).setDepth(1000);
     this.removeCpuButton.on("pointerdown", () => this.room.send("removeBot"));
 
+    // マップ選択（ロビー中のみ）。誰でも変更可（CPUボタンに倣う）。
+    this.mapLabel = this.add.text(width / 2, height / 2 + 104, "マップ:", {
+      fontSize: "16px", color: "#cccccc",
+    }).setOrigin(0.5).setDepth(1000);
+    const total = MAP_CHOICES.length;
+    const bw = 96, gap = 8;
+    const startX = width / 2 - (total * bw + (total - 1) * gap) / 2 + bw / 2;
+    MAP_CHOICES.forEach((m, i) => {
+      const btn = this.add.text(startX + i * (bw + gap), height / 2 + 140, m.name, {
+        fontSize: "16px", color: "#cccccc", backgroundColor: "#222",
+        padding: { x: 8, y: 6 } as any,
+      }).setOrigin(0.5).setInteractive({ useHandCursor: true }).setDepth(1000);
+      btn.on("pointerdown", () => this.room.send("selectMap", { mapId: m.id }));
+      this.mapButtons.push(btn);
+    });
+
     this.keys = addMoveKeys(this);
     this.keys.SPACE.on("down", () => this.room.send("placeBomb"));
     this.input.keyboard!.on("keydown-ESC", () => this.room.leave());
@@ -188,6 +209,10 @@ export class BombermanGameScene extends Phaser.Scene {
     $(state).items.onRemove((_it: any, id: string) => this.removeItem(id));
 
     $(state).listen("phase", () => this.onPhaseChanged());
+    // マップ（tiles）が変わったら描画とワープ対を作り直す（ロビー選択・ランダム確定）
+    $(state).listen("tiles", () => { this.buildWarpPairs(); this.rebuildGrid(); });
+    // 選択マップが変わったらボタンのハイライト更新
+    $(state).listen("mapId", () => this.refreshMapButtons());
 
     this.room.onLeave(() => this.scene.start("BombermanLobby"));
 
@@ -324,6 +349,7 @@ export class BombermanGameScene extends Phaser.Scene {
       move: entity.moveTargetCol >= 0
         ? { targetCol: entity.moveTargetCol, targetRow: entity.moveTargetRow }
         : null,
+      justWarped: !!entity.justWarped,
     };
     // サーバーが処理済みの入力を pending から破棄
     this.pending = this.pending.filter((c) => c.seq > entity.lastSeq);
@@ -351,6 +377,16 @@ export class BombermanGameScene extends Phaser.Scene {
       }
     }
 
+    // ベルト（サーバーと同一）：入力が無くベルト上なら矢印方向へ1マス
+    if (!pr.move && !hasInput) {
+      const b = this.beltDir(this.tileAt(pr.col, pr.row));
+      if (b) {
+        pr.dir = b.dir;
+        const ncol = pr.col + b.dc, nrow = pr.row + b.dr;
+        if (this.isPassable(ncol, nrow)) pr.move = { targetCol: ncol, targetRow: nrow };
+      }
+    }
+
     if (!pr.move) return;
 
     const tx = pr.move.targetCol * ts + ts / 2;
@@ -363,9 +399,71 @@ export class BombermanGameScene extends Phaser.Scene {
       pr.x = tx; pr.y = ty;
       pr.col = pr.move.targetCol; pr.row = pr.move.targetRow;
       pr.move = null;
+      this.predictWarp(pr); // ワープ上ならテレポート（サーバーと同一）
     } else {
       pr.x += (ddx / dist) * step;
       pr.y += (ddy / dist) * step;
+    }
+  }
+
+  // tiles 文字（範囲外は壁）
+  private tileAt(col: number, row: number): string {
+    const s: any = this.room.state;
+    if (col < 0 || row < 0 || col >= s.cols || row >= s.rows) return "#";
+    const t: string = s.tiles || "";
+    if (t.length !== s.cols * s.rows) return ".";
+    return t.charAt(row * s.cols + col);
+  }
+
+  private beltDir(ch: string): { dc: number; dr: number; dir: number } | null {
+    switch (ch) {
+      case "^": return { dc: 0, dr: -1, dir: 3 };
+      case "v": return { dc: 0, dr: 1, dir: 0 };
+      case "<": return { dc: -1, dr: 0, dir: 1 };
+      case ">": return { dc: 1, dr: 0, dir: 2 };
+      default: return null;
+    }
+  }
+
+  // ワープ予測（サーバー handleWarp と同一）
+  private predictWarp(pr: PredictState) {
+    const here = this.tileAt(pr.col, pr.row);
+    if (here >= "0" && here <= "9") {
+      if (!pr.justWarped) {
+        const pair = this.warpPairs.get(`${pr.col}_${pr.row}`);
+        if (pair) {
+          pr.col = pair.col; pr.row = pair.row;
+          pr.x = pair.col * this.ts + this.ts / 2;
+          pr.y = pair.row * this.ts + this.ts / 2;
+          pr.justWarped = true;
+        }
+      }
+    } else {
+      pr.justWarped = false;
+    }
+  }
+
+  // tiles からワープ対を構築（同じ数字2個で1組）
+  private buildWarpPairs() {
+    this.warpPairs.clear();
+    const s: any = this.room.state;
+    const t: string = s.tiles || "";
+    const by = new Map<string, Array<{ col: number; row: number }>>();
+    for (let row = 0; row < s.rows; row++) {
+      for (let col = 0; col < s.cols; col++) {
+        const ch = t.charAt(row * s.cols + col);
+        if (ch >= "0" && ch <= "9") {
+          if (!by.has(ch)) by.set(ch, []);
+          by.get(ch)!.push({ col, row });
+        }
+      }
+    }
+    for (const cells of by.values()) {
+      if (cells.length === 2) {
+        const [a, b] = cells;
+        this.warpPairs.set(`${a.col}_${a.row}`, b);
+        this.warpPairs.set(`${b.col}_${b.row}`, a);
+      }
     }
   }
 
@@ -392,6 +490,35 @@ export class BombermanGameScene extends Phaser.Scene {
   private isHardWall(col: number, row: number, cols: number, rows: number): boolean {
     if (col <= 0 || row <= 0 || col >= cols - 1 || row >= rows - 1) return true;
     return col % 2 === 0 && row % 2 === 0;
+  }
+
+  // tiles から床/壁/ベルト矢印/ワープ穴を描画。マップ変更時に作り直す。
+  private rebuildGrid() {
+    const s: any = this.room.state;
+    this.gridContainer?.destroy();
+    const cont = this.add.container(0, 0).setDepth(-1);
+    this.gridContainer = cont;
+    for (let row = 0; row < s.rows; row++) {
+      for (let col = 0; col < s.cols; col++) {
+        const c = this.cellCenter(col, row);
+        if (this.isHardWall(col, row, s.cols, s.rows)) {
+          cont.add(this.add.rectangle(c.x, c.y, this.ts, this.ts, 0x5a6270).setStrokeStyle(2, 0x3a4150));
+          cont.add(this.add.rectangle(c.x, c.y - this.ts * 0.18, this.ts, this.ts * 0.3, 0x6e7686, 0.7));
+          continue;
+        }
+        const shade = ((col + row) & 1) === 0 ? 0x3c8a4a : 0x46974f;
+        cont.add(this.add.rectangle(c.x, c.y, this.ts, this.ts, shade));
+        const ch = this.tileAt(col, row);
+        if (this.beltDir(ch)) {
+          cont.add(this.add.rectangle(c.x, c.y, this.ts - 4, this.ts - 4, 0x2b6b8a, 0.55));
+          const arrow = ch === "^" ? "▲" : ch === "v" ? "▼" : ch === "<" ? "◀" : "▶";
+          cont.add(this.add.text(c.x, c.y, arrow, { fontSize: `${Math.floor(this.ts * 0.5)}px`, color: "#cde7ff" }).setOrigin(0.5));
+        } else if (ch >= "0" && ch <= "9") {
+          cont.add(this.add.circle(c.x, c.y, this.ts * 0.34, 0x7a3ad4, 0.5).setStrokeStyle(2, 0xc89bff));
+          cont.add(this.add.text(c.x, c.y, ch, { fontSize: `${Math.floor(this.ts * 0.38)}px`, color: "#ffffff", fontStyle: "bold" }).setOrigin(0.5));
+        }
+      }
+    }
   }
 
   private addPlayer(id: string, p: any) {
@@ -519,10 +646,28 @@ export class BombermanGameScene extends Phaser.Scene {
     }
   }
 
+  // 選択中マップを強調表示
+  private refreshMapButtons() {
+    const cur = (this.room.state as any).mapId;
+    this.mapButtons.forEach((btn, i) => {
+      const sel = MAP_CHOICES[i].id === cur;
+      btn.setColor(sel ? "#1a1d24" : "#cccccc");
+      btn.setBackgroundColor(sel ? "#ffe066" : "#222");
+    });
+  }
+
+  private setMapUiVisible(v: boolean) {
+    this.mapLabel.setVisible(v);
+    this.mapButtons.forEach((b) => b.setVisible(v));
+  }
+
   private onPhaseChanged() {
     const state: any = this.room.state;
     const phase = state.phase;
     state.players?.forEach((p: any, id: string) => this.updateLabelForPhase(id, p));
+    // マップ選択UIはロビー中のみ表示
+    this.setMapUiVisible(phase === "lobby");
+    this.refreshMapButtons();
 
     if (phase === "lobby") {
       this.phaseText.setText("LOBBY — 「準備 OK」or CPUと対戦");
