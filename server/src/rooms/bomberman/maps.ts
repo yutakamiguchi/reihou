@@ -4,8 +4,8 @@
 // 乱数を含まないため、クライアントは tiles 1本からマップを完全復元でき予測が決定論的に一致する。
 // ソフトブロックだけは別途サーバーが乱数生成する（generateMap）。
 
-export const MAP_COLS = 13;
-export const MAP_ROWS = 11;
+export const MAP_COLS = 17;
+export const MAP_ROWS = 13;
 
 export interface BombermanMap {
   id: string;
@@ -16,13 +16,15 @@ export interface BombermanMap {
 }
 
 // 四隅スポーンとその L 字（隣接2セル）。ここにはギミック・壁を置かない。
-// BombermanRoom.spawnCellFor / isSpawnSafe と同一定義。
-const SPAWN_SAFE: Array<[number, number]> = [
-  [1, 1], [2, 1], [1, 2],
-  [MAP_COLS - 2, 1], [MAP_COLS - 3, 1], [MAP_COLS - 2, 2],
-  [1, MAP_ROWS - 2], [2, MAP_ROWS - 2], [1, MAP_ROWS - 3],
-  [MAP_COLS - 2, MAP_ROWS - 2], [MAP_COLS - 3, MAP_ROWS - 2], [MAP_COLS - 2, MAP_ROWS - 3],
-];
+// BombermanRoom.spawnCellFor / isSpawnSafe と同一定義（サイズ可変対応）。
+function spawnSafeFor(cols: number, rows: number): Array<[number, number]> {
+  return [
+    [1, 1], [2, 1], [1, 2],
+    [cols - 2, 1], [cols - 3, 1], [cols - 2, 2],
+    [1, rows - 2], [2, rows - 2], [1, rows - 3],
+    [cols - 2, rows - 2], [cols - 3, rows - 2], [cols - 2, rows - 3],
+  ];
+}
 
 // 現行の isHardWall（外周 + 偶数×偶数）を完全再現したベースグリッド。
 function classicGrid(): string[][] {
@@ -56,9 +58,17 @@ function fromEdits(edits: Edit[]): string {
 }
 
 // 1行ぶんの水平ライン（内側 col=1..COLS-2）を ch で埋める edits を生成。
+// ※ ベルトは奇数行/奇数列にのみ置くこと（偶数×偶数の硬壁と重なると壁優先で無効化されるため）。
 function hLine(row: number, ch: string): Edit[] {
   const e: Edit[] = [];
   for (let c = 1; c <= MAP_COLS - 2; c++) e.push([c, row, ch]);
+  return e;
+}
+
+// 1列ぶんの垂直ライン（内側 row=1..ROWS-2）を ch で埋める edits を生成。
+function vLine(col: number, ch: string): Edit[] {
+  const e: Edit[] = [];
+  for (let r = 1; r <= MAP_ROWS - 2; r++) e.push([col, r, ch]);
   return e;
 }
 
@@ -72,27 +82,32 @@ export const BOMBERMAN_MAPS: BombermanMap[] = [
   {
     id: "belts",
     name: "ベルト",
-    // 上段 row3 を右流れ、下段 row7 を左流れの横ベルト2本。どちらも奇数行で全床。
-    tiles: fromEdits([...hLine(3, ">"), ...hLine(7, "<")]),
+    // 横ベルト2本（row3=右流れ / row9=左流れ）＋縦ベルト2本（col5=下流れ / col11=上流れ）。
+    // 全て奇数行・奇数列＝全床。盤面を循環するコンベア。
+    tiles: fromEdits([
+      ...hLine(3, ">"), ...hLine(9, "<"),
+      ...vLine(5, "v"), ...vLine(11, "^"),
+    ]),
     cols: MAP_COLS, rows: MAP_ROWS,
   },
   {
     id: "warps",
     name: "ワープ",
-    // 左右中央を結ぶワープ '0'、上下を結ぶワープ '1'。いずれも床・安全地帯外。
+    // ワープ3対（同番号が対）。広い盤面を一気に横断できる。すべて床・安全地帯外。
     tiles: fromEdits([
-      [1, 5, "0"], [MAP_COLS - 2, 5, "0"],
-      [5, 1, "1"], [7, MAP_ROWS - 2, "1"],
+      [1, 5, "0"], [15, 7, "0"],
+      [5, 1, "1"], [11, 11, "1"],
+      [13, 3, "2"], [3, 9, "2"],
     ]),
     cols: MAP_COLS, rows: MAP_ROWS,
   },
   {
     id: "mixed",
     name: "ミックス",
-    // 中央 row5 を右流れベルト＋斜向かいのワープ '0' を1対。
+    // 横ベルト(row5=右)＋縦ベルト(col11=上)＋ワープ1対(0)。ギミック盛り合わせ。
     tiles: fromEdits([
-      ...hLine(5, ">"),
-      [1, 3, "0"], [MAP_COLS - 2, 7, "0"],
+      ...hLine(5, ">"), ...vLine(11, "^"),
+      [1, 3, "0"], [15, 9, "0"],
     ]),
     cols: MAP_COLS, rows: MAP_ROWS,
   },
@@ -116,7 +131,7 @@ export function validateMap(m: BombermanMap): void {
   if (m.tiles.length !== m.cols * m.rows) {
     throw new Error(`map ${m.id}: tiles length ${m.tiles.length} != ${m.cols * m.rows}`);
   }
-  for (const [c, r] of SPAWN_SAFE) {
+  for (const [c, r] of spawnSafeFor(m.cols, m.rows)) {
     if (at(c, r) !== ".") {
       throw new Error(`map ${m.id}: spawn-safe cell (${c},${r}) must be floor but is '${at(c, r)}'`);
     }

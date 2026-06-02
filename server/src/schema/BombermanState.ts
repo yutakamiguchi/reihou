@@ -59,8 +59,8 @@ export class BombermanState extends Schema {
   @type({ map: Flame }) flames = new MapSchema<Flame>();
   @type({ map: Item }) items = new MapSchema<Item>();
   @type({ map: SoftBlock }) softBlocks = new MapSchema<SoftBlock>();
-  @type("number") cols: number = 13;
-  @type("number") rows: number = 11;
+  @type("number") cols: number = 17;
+  @type("number") rows: number = 13;
   @type("number") tileSize: number = 48;
   // マップレイアウト。row-major の文字列（'#'壁 '.'床 '^v<>'ベルト '0-9'ワープ対）。詳細は maps.ts。
   @type("string") tiles: string = "";
