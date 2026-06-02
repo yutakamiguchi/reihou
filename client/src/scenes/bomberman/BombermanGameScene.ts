@@ -235,10 +235,20 @@ export class BombermanGameScene extends Phaser.Scene {
 
       let sx: number, sy: number;
       if (id === this.myId && this.predict) {
-        // 自分は予測位置（即時）。サーバーとのズレはstepPredict内で緩く補正済み。
+        // 自分は予測位置へ「補間で」追従する。予測が再同期で飛んでも（テレポート）、
+        // 画面表示はスッと寄るだけなので瞬間移動に見えない。通常移動は予測がほぼ等速
+        // なので補間でも遅延を感じない。大きく飛んだ時だけ即座に合わせる。
         sx = this.offsetX + this.predict.x;
         sy = this.offsetY + this.predict.y;
-        v.container.setPosition(sx, sy);
+        const jump = Math.hypot(sx - v.container.x, sy - v.container.y);
+        if (jump > this.ts * 2.5) {
+          v.container.setPosition(sx, sy); // 初回配置など極端な差は即合わせ
+        } else {
+          v.container.setPosition(
+            Phaser.Math.Linear(v.container.x, sx, 0.4),
+            Phaser.Math.Linear(v.container.y, sy, 0.4),
+          );
+        }
       } else {
         // 他者はサーバー位置へ補間
         sx = this.offsetX + p.x;
