@@ -2,7 +2,7 @@ import Phaser from "phaser";
 import { makeInput, makeButton } from "../../ui/nameInput";
 import {
   getUser, signInWithEmail, signUpWithEmail, signInAsGuest,
-  upgradeGuestToEmail, signOut, getMyProfile,
+  upgradeGuestToEmail, signOut, getMyProfile, setDisplayName,
 } from "../../auth";
 
 // ポータル共通アカウントのログイン/アカウント画面。
@@ -53,17 +53,34 @@ export class LoginScene extends Phaser.Scene {
   // --- ログイン済み（メールあり）---
   private async renderLoggedIn(cx: number, email: string) {
     const profile = await getMyProfile();
-    this.add.text(cx, 200, `ログイン中`, { fontSize: "20px", color: "#7ee787" }).setOrigin(0.5);
-    this.add.text(cx, 240, email, { fontSize: "22px", color: "#fff" }).setOrigin(0.5);
-    if (profile) {
-      this.add.text(cx, 280, `表示名: ${profile.display_name}`, { fontSize: "16px", color: "#cccccc" }).setOrigin(0.5);
-    }
-    makeButton(this, cx, 360, `▶ ${this.returnTo === "Spirit" ? "霊宝へ" : "戻る"}`, "#7ee787", () => this.scene.start(this.returnTo));
-    makeButton(this, cx, 430, "ログアウト", "#e08a8a", async () => {
+    this.add.text(cx, 195, `ログイン中`, { fontSize: "20px", color: "#7ee787" }).setOrigin(0.5);
+    this.add.text(cx, 230, email, { fontSize: "20px", color: "#fff" }).setOrigin(0.5);
+
+    // 表示名の変更
+    this.add.text(cx, 285, "表示名（霊宝の世界で表示）", { fontSize: "14px", color: "#cccccc" }).setOrigin(0.5);
+    const nameInput = makeInput(this, "表示名", 16, profile?.display_name ?? "", cx - 40, 320, 200);
+    this.dom.push(nameInput);
+    makeButton(this, cx + 140, 320, "変更", "#7ec0e7", () => this.changeName(nameInput.value));
+
+    makeButton(this, cx, 400, `▶ ${this.returnTo === "Spirit" ? "霊宝へ" : "戻る"}`, "#7ee787", () => this.scene.start(this.returnTo));
+    makeButton(this, cx, 465, "ログアウト", "#e08a8a", async () => {
       await signOut();
       this.setMsg("ログアウトしました");
       this.rebuild();
     });
+  }
+
+  private async changeName(name: string) {
+    const n = name.trim();
+    if (!n) { this.setMsg("名前を入力してください", "#e08a8a"); return; }
+    this.setMsg("変更中…", "#cccccc");
+    try {
+      await setDisplayName(n);
+      this.setMsg("表示名を変更しました（霊宝の世界は次回入場時に反映）", "#7ee787");
+      this.rebuild();
+    } catch (e: any) {
+      this.setMsg(`失敗: ${e?.message ?? e}`, "#e08a8a");
+    }
   }
 
   // --- 未ログイン / ゲスト：ログイン・新規登録フォーム ---
