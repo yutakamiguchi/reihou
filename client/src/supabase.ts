@@ -5,17 +5,17 @@ import { createClient } from "@supabase/supabase-js";
 const url = import.meta.env.VITE_SUPABASE_URL;
 const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-if (!url || !anonKey) {
+export const isSupabaseConfigured = Boolean(url && anonKey);
+
+if (!isSupabaseConfigured) {
   console.warn(
-    "[supabase] VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY が未設定です。client/.env を確認してください。"
+    "[supabase] VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY が未設定です。client/.env または Netlify の環境変数を確認してください。"
   );
 }
 
-export const supabase = createClient(url ?? "", anonKey ?? "", {
-  auth: {
-    persistSession: true,    // ブラウザにセッション保持（再訪でログイン維持）
-    autoRefreshToken: true,
-  },
-});
-
-export const isSupabaseConfigured = Boolean(url && anonKey);
+// createClient は空URLだと例外を投げるため、未設定時はプレースホルダで生成（霊宝以外は動作）。
+export const supabase = createClient(
+  url || "https://placeholder.supabase.co",
+  anonKey || "placeholder",
+  { auth: { persistSession: true, autoRefreshToken: true } },
+);
