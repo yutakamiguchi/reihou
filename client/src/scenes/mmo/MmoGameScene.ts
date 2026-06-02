@@ -260,14 +260,20 @@ export class MmoGameScene extends Phaser.Scene {
 
     T(leftX, 250, "▸ RPGステータス", 18, "#7ee787", true);
     if (me) {
-      T(leftX, 282, `レベル  ${me.level}`, 16, "#ece7f5");
-      T(leftX, 308, `EXP    ${me.exp} / ${me.nextExp}`, 16, "#ece7f5");
-      T(leftX, 334, `HP     ${me.hp} / ${me.maxHp}`, 16, "#ece7f5");
-      T(leftX, 360, `ATK    ${me.atk}`, 16, "#ece7f5");
+      const fmtTime = (sec: number) => {
+        const s = Math.max(0, Math.floor(sec || 0));
+        const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+        return h > 0 ? `${h}時間${m}分` : `${m}分${ss}秒`;
+      };
+      T(leftX, 282, `レベル    ${me.level}`, 16, "#ece7f5");
+      T(leftX, 308, `EXP      ${me.exp} / ${me.nextExp}`, 16, "#ece7f5");
+      T(leftX, 334, `HP       ${me.hp} / ${me.maxHp}`, 16, "#ece7f5");
+      T(leftX, 360, `ATK      ${me.atk}`, 16, "#ece7f5");
+      T(leftX, 386, `討伐数    ${me.kills ?? 0}`, 16, "#ece7f5");
+      T(leftX, 412, `プレイ時間 ${fmtTime(me.playSec)}`, 16, "#ece7f5");
     } else {
       T(leftX, 282, "（世界に入ると表示）", 14, "#9b93b0");
     }
-    T(leftX, 400, "※ レベル等は現状サーバー再起動でリセット（永続化は未実装）", 12, "#6a6285");
 
     T(rightX, 100, "▸ 蒐集進捗", 18, "#7ee787", true);
     const col = T(rightX, 132, "読み込み中…", 16, "#ece7f5");

@@ -19,6 +19,8 @@ export class MmoPlayer extends Schema {
   @type("boolean") dead: boolean = false;
   @type("number") respawnAt: number = 0;
   @type("number") colorIndex: number = 0;
+  @type("number") kills: number = 0;     // 累計討伐数（永続）
+  @type("number") playSec: number = 0;   // 累計プレイ時間(秒、永続)
 }
 
 // モンスター。

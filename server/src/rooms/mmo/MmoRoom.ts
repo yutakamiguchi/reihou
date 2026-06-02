@@ -52,6 +52,9 @@ export class MmoRoom extends Room<MmoState> {
   private lastTick = 0;
   // 霊宝の所有を保存する先＝Supabaseのアカウント。sessionId -> profile_id（ゲストは null）
   private profileIds = new Map<string, string | null>();
+  // プレイ時間の算出用：sessionId -> { 読込時点の累計秒, このセッション開始時刻ms }
+  private statsRt = new Map<string, { basePlaySec: number; sessionStartMs: number }>();
+  private lastPersistAt = 0;
 
   onCreate() {
     this.setState(new MmoState());
@@ -109,17 +112,24 @@ export class MmoRoom extends Room<MmoState> {
     p.maxHp = 100; p.hp = 100; p.atk = 10;
 
     // 保存済みの進行を復元（ログイン者のみ）
+    let basePlaySec = 0;
     if (profileId && isSupabaseConfigured) {
       const s = await loadGameStats(profileId, SPIRIT_GAME_KEY);
-      if (s && typeof s.level === "number" && s.level >= 1) {
-        p.level = s.level;
-        p.exp = typeof s.exp === "number" ? s.exp : 0;
-        p.nextExp = nextExpFor(p.level);
-        p.maxHp = maxHpFor(p.level);
-        p.atk = atkFor(p.level);
-        p.hp = p.maxHp;
+      if (s) {
+        if (typeof s.level === "number" && s.level >= 1) {
+          p.level = s.level;
+          p.exp = typeof s.exp === "number" ? s.exp : 0;
+          p.nextExp = nextExpFor(p.level);
+          p.maxHp = maxHpFor(p.level);
+          p.atk = atkFor(p.level);
+          p.hp = p.maxHp;
+        }
+        p.kills = typeof s.kills === "number" ? s.kills : 0;
+        basePlaySec = typeof s.playSec === "number" ? s.playSec : 0;
       }
     }
+    p.playSec = Math.floor(basePlaySec);
+    this.statsRt.set(client.sessionId, { basePlaySec, sessionStartMs: Date.now() });
 
     this.placeRandomly(p);
     this.state.players.set(client.sessionId, p);
@@ -135,13 +145,16 @@ export class MmoRoom extends Room<MmoState> {
     this.state.players.delete(client.sessionId);
     this.inputs.delete(client.sessionId);
     this.profileIds.delete(client.sessionId);
+    this.statsRt.delete(client.sessionId);
   }
 
-  // ログイン者ならレベル/EXPを game_stats に保存（fire-and-forget）。
+  // ログイン者なら進行（レベル/EXP/討伐数/プレイ時間）を game_stats に保存（fire-and-forget）。
   private persistStats(p: MmoPlayer) {
     const pid = this.profileIds.get(p.id);
     if (!pid || !isSupabaseConfigured) return;
-    void saveGameStats(pid, SPIRIT_GAME_KEY, { level: p.level, exp: p.exp });
+    void saveGameStats(pid, SPIRIT_GAME_KEY, {
+      level: p.level, exp: p.exp, kills: p.kills, playSec: p.playSec,
+    });
   }
 
   // --- スポーン ---
@@ -273,6 +286,17 @@ export class MmoRoom extends Room<MmoState> {
       this.spawnRelic();
       this.lastRelicSpawnAt = now + RELIC_SPAWN_COOLDOWN_MS;
     }
+
+    // プレイ時間を更新（整数秒なので変化は毎秒1回＝差分送信は軽い）
+    this.state.players.forEach((p) => {
+      const rt = this.statsRt.get(p.id);
+      if (rt) p.playSec = Math.floor(rt.basePlaySec + (now - rt.sessionStartMs) / 1000);
+    });
+    // 60秒ごとに全員ぶんを保存（ungraceful切断対策）
+    if (now - this.lastPersistAt > 60000) {
+      this.lastPersistAt = now;
+      this.state.players.forEach((p) => this.persistStats(p));
+    }
   }
 
   private spawnRelic() {
@@ -328,6 +352,7 @@ export class MmoRoom extends Room<MmoState> {
   }
 
   private onMobKilled(attacker: MmoPlayer, mobId: string, mob: Mob) {
+    attacker.kills += 1; // 討伐数（表示用・ログイン者は永続）
     // EXP 付与
     const gain = 5 + mob.level * 3;
     const oldLevel = attacker.level;
