@@ -61,6 +61,34 @@ export function applyCharPose(
 // 立ち絵の最初のテクスチャキー（addView 時の初期表示用）。
 export const CHAR_INITIAL_TEX = texKey("front", "idle");
 
+// ── ボンバーマン専用キャラ（プレイヤー別 1p〜4p、方向3枚のみ・ポーズ無し）──────
+// client/public/char-bomberman/{1..4}p_{front|side|back}.png
+export function bombermanTexKey(playerNo: number, dir: Dir) {
+  const n = Math.min(4, Math.max(1, playerNo || 1));
+  return `bchar_${n}_${dir}`;
+}
+
+export function preloadBombermanChars(scene: Phaser.Scene) {
+  for (let p = 1; p <= 4; p++) {
+    for (const dir of DIRS) {
+      const key = bombermanTexKey(p, dir);
+      if (!scene.textures.exists(key)) scene.load.image(key, `/char-bomberman/${p}p_${dir}.png`);
+    }
+  }
+}
+
+// プレイヤー別の方向ポーズを適用（walk/punch は無いので方向画像を流用、side は左反転）。
+export function applyBombermanPose(
+  sprite: Phaser.GameObjects.Sprite,
+  playerNo: number, dir: Dir, flip: boolean, displayH: number,
+) {
+  const key = bombermanTexKey(playerNo, dir);
+  if (sprite.texture.key !== key) sprite.setTexture(key);
+  const h = sprite.frame.realHeight || displayH;
+  sprite.setScale(displayH / h);
+  sprite.setFlipX(dir === "side" && flip);
+}
+
 // 移動ベクトル(dx,dy)から向きと左反転を求める。停止時は null。
 export function dirFromVector(dx: number, dy: number): { dir: Dir; flip: boolean } | null {
   if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return null;

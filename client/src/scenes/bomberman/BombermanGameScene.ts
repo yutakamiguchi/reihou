@@ -1,10 +1,8 @@
 import Phaser from "phaser";
 import { getStateCallbacks, type Room } from "colyseus.js";
 import {
-  preloadCharTextures, ensureCharAnims, applyCharPose,
-  CHAR_INITIAL_TEX, type Dir,
+  preloadBombermanChars, applyBombermanPose, bombermanTexKey, type Dir,
 } from "../../character";
-import { COLORS } from "../../colors";
 import { sfxHitPlayer, sfxScore, sfxRoundStart, sfxRoundEnd } from "../../sfx";
 import { addMoveKeys } from "../../ui/inputKeys";
 
@@ -47,6 +45,7 @@ interface PlayerView {
   wasAlive: boolean;
   dir: Dir;
   flip: boolean;
+  playerNo: number;
 }
 
 export class BombermanGameScene extends Phaser.Scene {
@@ -101,12 +100,11 @@ export class BombermanGameScene extends Phaser.Scene {
   }
 
   preload() {
-    preloadCharTextures(this);
+    preloadBombermanChars(this);
   }
 
   create() {
     const { width, height } = this.scale;
-    ensureCharAnims(this);
     const state: any = this.room.state;
     this.ts = state.tileSize;
     const gridW = state.cols * this.ts;
@@ -308,10 +306,9 @@ export class BombermanGameScene extends Phaser.Scene {
       else if (dirVal === 1) { v.dir = "side"; v.flip = true; }
       else if (dirVal === 2) { v.dir = "side"; v.flip = false; }
 
-      // 歩行/待機ポーズの適用
-      const moving = Math.hypot(sx - v.lastX, sy - v.lastY) > 0.4 && p.alive;
+      // プレイヤー別の方向ポーズ（walk/punch画像は無いので向きだけ反映）
       v.lastX = sx; v.lastY = sy;
-      applyCharPose(v.sprite, v.dir, moving ? "walk" : "idle", v.flip, CHAR_DISPLAY_H);
+      applyBombermanPose(v.sprite, v.playerNo, v.dir, v.flip, CHAR_DISPLAY_H);
 
       if (v.wasAlive && !p.alive) {
         v.wasAlive = false;
@@ -526,9 +523,8 @@ export class BombermanGameScene extends Phaser.Scene {
     const sy = this.offsetY + p.y;
     const container = this.add.container(sx, sy);
     const shadow = this.add.ellipse(0, 0, 26, 9, 0x000000, 0.4);
-    const sprite = this.add.sprite(0, 0, CHAR_INITIAL_TEX).setOrigin(0.5, 0.96);
-    applyCharPose(sprite, "front", "idle", false, CHAR_DISPLAY_H);
-    sprite.setTint(COLORS[p.colorIndex % COLORS.length]);
+    const sprite = this.add.sprite(0, 0, bombermanTexKey(p.playerNo, "front")).setOrigin(0.5, 0.96);
+    applyBombermanPose(sprite, p.playerNo, "front", false, CHAR_DISPLAY_H);
     if (id === this.myId) {
       const ring = this.add.ellipse(0, 2, 30, 12, 0xffe066, 0).setStrokeStyle(2, 0xffe066);
       container.add(ring);
@@ -536,7 +532,7 @@ export class BombermanGameScene extends Phaser.Scene {
     container.add([shadow, sprite]);
     this.worldLayer.add(container);
 
-    this.players.set(id, { container, sprite, shadow, lastX: sx, lastY: sy, wasAlive: true, dir: "front", flip: false });
+    this.players.set(id, { container, sprite, shadow, lastX: sx, lastY: sy, wasAlive: true, dir: "front", flip: false, playerNo: p.playerNo });
     this.updateLabelForPhase(id, p);
   }
 

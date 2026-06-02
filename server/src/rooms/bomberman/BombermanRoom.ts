@@ -108,7 +108,8 @@ export class BombermanRoom extends Room<BombermanState> {
     p.name = (options?.name || "Player").slice(0, 16);
     p.entityId = client.sessionId;
     p.colorIndex = Math.floor(Math.random() * NUM_COLORS);
-    const spawn = this.spawnCellFor(this.state.players.size);
+    p.playerNo = this.nextPlayerNo();
+    const spawn = this.spawnCellFor(p.playerNo - 1);
     this.placePlayerAtCell(p, spawn.col, spawn.row);
     this.state.players.set(client.sessionId, p);
     this.inputs.set(client.sessionId, { up: false, down: false, left: false, right: false, seq: 0 });
@@ -117,6 +118,14 @@ export class BombermanRoom extends Room<BombermanState> {
 
   onLeave(client: Client) {
     this.removePlayerId(client.sessionId);
+  }
+
+  // 空いている最小のプレイヤー番号(1〜4)を返す。退出で空けば再利用される。
+  private nextPlayerNo(): number {
+    const used = new Set<number>();
+    this.state.players.forEach((p) => used.add(p.playerNo));
+    for (let n = 1; n <= MAX_SLOTS; n++) if (!used.has(n)) return n;
+    return 1;
   }
 
   // 人間・CPU 共通の退出処理。
@@ -137,7 +146,8 @@ export class BombermanRoom extends Room<BombermanState> {
     p.isBot = true;
     p.ready = true; // CPU は常に準備OK
     p.colorIndex = Math.floor(Math.random() * NUM_COLORS);
-    const spawn = this.spawnCellFor(this.state.players.size);
+    p.playerNo = this.nextPlayerNo();
+    const spawn = this.spawnCellFor(p.playerNo - 1);
     this.placePlayerAtCell(p, spawn.col, spawn.row);
     this.state.players.set(id, p);
     this.inputs.set(id, { up: false, down: false, left: false, right: false, seq: 0 });

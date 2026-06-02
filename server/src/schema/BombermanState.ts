@@ -46,6 +46,7 @@ export class BPlayer extends Schema {
   @type("boolean") ready: boolean = false;
   @type("number") colorIndex: number = 0;
   @type("boolean") isBot: boolean = false;
+  @type("number") playerNo: number = 1; // 1〜4（専用キャラ画像とスポーン位置の割り当て）
   // --- クライアント予測のサーバーリコンシリエーション用 ---
   @type("number") lastSeq: number = 0;        // 反映済みの最新入力seq
   @type("number") moveTargetCol: number = -1; // 移動中の目標セル col（-1=移動中でない）
