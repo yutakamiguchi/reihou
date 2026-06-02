@@ -247,11 +247,13 @@ export class BombermanGameScene extends Phaser.Scene {
       const v = this.players.get(id);
       if (!v) return;
 
+      // 表示補間はフレームレート非依存の指数スムージングにする。
+      // 予測は30Hzの固定ステップで離散的に進むため、60fps表示で素のlerpだと
+      // フレームごとの進み量のばらつきが小刻みな揺れ（カクつき）になる。
+      // dtベースの係数にすることでフレームレートに依らず一定の滑らかさにする。
+      const smooth = 1 - Math.exp(-30 * Math.min(dtMs, 100) / 1000);
       let sx: number, sy: number;
       if (id === this.myId && this.predict) {
-        // 自分は予測位置へ「補間で」追従する。予測が再同期で飛んでも（テレポート）、
-        // 画面表示はスッと寄るだけなので瞬間移動に見えない。通常移動は予測がほぼ等速
-        // なので補間でも遅延を感じない。大きく飛んだ時だけ即座に合わせる。
         sx = this.offsetX + this.predict.x;
         sy = this.offsetY + this.predict.y;
         const jump = Math.hypot(sx - v.container.x, sy - v.container.y);
@@ -259,8 +261,8 @@ export class BombermanGameScene extends Phaser.Scene {
           v.container.setPosition(sx, sy); // 初回配置など極端な差は即合わせ
         } else {
           v.container.setPosition(
-            Phaser.Math.Linear(v.container.x, sx, 0.4),
-            Phaser.Math.Linear(v.container.y, sy, 0.4),
+            Phaser.Math.Linear(v.container.x, sx, smooth),
+            Phaser.Math.Linear(v.container.y, sy, smooth),
           );
         }
       } else {
@@ -268,8 +270,8 @@ export class BombermanGameScene extends Phaser.Scene {
         sx = this.offsetX + p.x;
         sy = this.offsetY + p.y;
         v.container.setPosition(
-          Phaser.Math.Linear(v.container.x, sx, 0.35),
-          Phaser.Math.Linear(v.container.y, sy, 0.35),
+          Phaser.Math.Linear(v.container.x, sx, smooth),
+          Phaser.Math.Linear(v.container.y, sy, smooth),
         );
       }
       v.container.setDepth(sy);
