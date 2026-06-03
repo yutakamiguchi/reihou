@@ -554,7 +554,7 @@ export class MmoGameScene extends Phaser.Scene {
     const base = (icon as any).scaleX as number;
     const spin = { t: 0 };
     this.tweens.add({
-      targets: spin, t: 1, duration: 4500, repeat: -1, ease: "Linear",
+      targets: spin, t: 1, duration: 12000, repeat: -1, ease: "Linear",
       onUpdate: () => { if ((icon as any).active) (icon as any).scaleX = base * Math.cos(spin.t * Math.PI * 2); },
     });
     layer.add(this.add.text(leftX, cy + 185, meta.label, { fontSize: "20px", color: meta.colorStr, fontStyle: "bold" }).setOrigin(0.5));
