@@ -18,19 +18,23 @@ const ENTITY_RADIUS = 14;
 const CHAR_DISPLAY_H = 56;
 const MOB_DISPLAY_H = 52;
 
-// 敵の種別ごとの見た目（絵文字＝プレイヤーと別の姿・色・大きさ）。server の MOB_KINDS と対応。
-const MOB_STYLE: Record<string, { emoji: string; tint: number; scale: number; label?: string }> = {
-  grunt:    { emoji: "👻", tint: 0x88dd88, scale: 1.0 },
-  swift:    { emoji: "🦇", tint: 0x9b7ad0, scale: 0.9 },
-  tank:     { emoji: "🗿", tint: 0xc8a06a, scale: 1.5 },
-  brute:    { emoji: "👹", tint: 0xe0644a, scale: 1.2 },
-  slime:    { emoji: "🟢", tint: 0x6be36b, scale: 0.85 },
-  spider:   { emoji: "🕷️", tint: 0x8a5ad0, scale: 1.0 },
-  skeleton: { emoji: "💀", tint: 0xdddddd, scale: 1.05 },
-  scorpion: { emoji: "🦂", tint: 0xd0a85a, scale: 1.25 },
-  serpent:  { emoji: "🐍", tint: 0x7ad06b, scale: 1.15 },
-  boss:     { emoji: "🐲", tint: 0xb05ad0, scale: 2.1, label: "災厄の主" },
+// 敵の種別ごとの見た目（色・大きさ）。server の MOB_KINDS と対応。
+// 専用イラストは client/public/mobs/<種別>.png を置き、MOB_IMAGE_KINDS に種別を足すと切り替わる。
+const MOB_STYLE: Record<string, { tint: number; scale: number; label?: string }> = {
+  grunt:    { tint: 0x88dd88, scale: 1.0 },
+  swift:    { tint: 0x9b7ad0, scale: 0.9 },
+  tank:     { tint: 0xc8a06a, scale: 1.5 },
+  brute:    { tint: 0xe0644a, scale: 1.2 },
+  slime:    { tint: 0x6be36b, scale: 0.85 },
+  spider:   { tint: 0x8a5ad0, scale: 1.0 },
+  skeleton: { tint: 0xdddddd, scale: 1.05 },
+  scorpion: { tint: 0xd0a85a, scale: 1.25 },
+  serpent:  { tint: 0x7ad06b, scale: 1.15 },
+  boss:     { tint: 0xb05ad0, scale: 2.1, label: "災厄の主" },
 };
+// 専用イラスト(PNG)を用意した種別。client/public/mobs/<種別>.png。
+const MOB_IMAGE_KINDS: string[] = [];
+const mobTexKey = (kind: string) => `mob:${kind}`;
 
 interface PlayerView {
   container: Phaser.GameObjects.Container;
@@ -48,7 +52,7 @@ interface PlayerView {
 interface MobView {
   container: Phaser.GameObjects.Container;
   shadow: Phaser.GameObjects.Ellipse;
-  sprite: Phaser.GameObjects.Text; // 絵文字
+  body: Phaser.GameObjects.Container; // イラスト or 仮の塊
   hpBg: Phaser.GameObjects.Rectangle;
   hpFg: Phaser.GameObjects.Rectangle;
 }
@@ -117,6 +121,10 @@ export class MmoGameScene extends Phaser.Scene {
     // 霊宝イラスト（用意されたものだけ。無いカードは絵文字表示）
     for (const name of RELIC_IMAGE_NAMES) {
       this.load.image(relicTexKey(name), `/relics/${encodeURIComponent(name)}.png`);
+    }
+    // 敵イラスト（用意された種別だけ。無い種別は仮の塊で表示）
+    for (const kind of MOB_IMAGE_KINDS) {
+      this.load.image(mobTexKey(kind), `/mobs/${kind}.png`);
     }
   }
 
@@ -797,25 +805,41 @@ export class MmoGameScene extends Phaser.Scene {
 
   private addMobView(id: string, m: any) {
     const style = MOB_STYLE[m.kind] ?? MOB_STYLE.grunt;
-    const fontPx = Math.round(40 * style.scale);
-    const cyOff = -fontPx * 0.35;
+    const sizePx = Math.round(44 * style.scale);
+    const cyOff = -sizePx * 0.4;
     const container = this.add.container(m.x, m.y);
-    const shadow = this.add.ellipse(0, 4, 22 * style.scale, 8 * style.scale, 0x000000, 0.4);
-    const aura = this.add.circle(0, cyOff, fontPx * 0.62, style.tint, 0.16); // 種別色のオーラ
-    const sprite = this.add.text(0, cyOff, style.emoji, { fontSize: `${fontPx}px` }).setOrigin(0.5);
-    const barY = cyOff - fontPx * 0.55 - 6;
+    const shadow = this.add.ellipse(0, 4, 24 * style.scale, 8 * style.scale, 0x000000, 0.4);
+
+    // 本体：専用イラストがあればそれ、無ければ色付きの塊（目つき）で代用
+    const body = this.add.container(0, cyOff);
+    const texKey = mobTexKey(m.kind);
+    if (this.textures.exists(texKey)) {
+      const sp = this.add.sprite(0, 0, texKey).setOrigin(0.5);
+      sp.setScale(sizePx / Math.max(sp.width, sp.height));
+      body.add(sp);
+    } else {
+      const r = sizePx * 0.5;
+      const blob = this.add.ellipse(0, 0, r * 2, r * 1.75, style.tint, 1).setStrokeStyle(3, 0x20202c);
+      const eyeL = this.add.circle(-r * 0.34, -r * 0.18, r * 0.16, 0xffffff);
+      const eyeR = this.add.circle(r * 0.34, -r * 0.18, r * 0.16, 0xffffff);
+      const pupL = this.add.circle(-r * 0.34, -r * 0.14, r * 0.07, 0x111111);
+      const pupR = this.add.circle(r * 0.34, -r * 0.14, r * 0.07, 0x111111);
+      body.add([blob, eyeL, eyeR, pupL, pupR]);
+    }
+
+    const barY = cyOff - sizePx * 0.6 - 6;
     const hpBg = this.add.rectangle(0, barY, 30, 4, 0x000000, 0.6);
     const hpFg = this.add.rectangle(-15, barY, 30, 4, 0xff7777).setOrigin(0, 0.5);
-    container.add([shadow, aura, sprite, hpBg, hpFg]);
+    container.add([shadow, body, hpBg, hpFg]);
     if (style.label) {
       container.add(this.add.text(0, barY - 14, style.label, {
         fontSize: "13px", color: "#e0b3ff", fontStyle: "bold", stroke: "#000", strokeThickness: 3,
       }).setOrigin(0.5));
     }
     this.worldLayer.add(container);
-    this.mobs.set(id, { container, shadow, sprite, hpBg, hpFg });
+    this.mobs.set(id, { container, shadow, body, hpBg, hpFg });
     this.updateMobHpBar(id, m);
-    this.tweens.add({ targets: sprite, y: cyOff - 4, duration: 800 + Math.random() * 400, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
+    this.tweens.add({ targets: body, y: cyOff - 4, duration: 800 + Math.random() * 400, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
   }
 
   private updateMobHpBar(id: string, m: any) {
@@ -848,8 +872,7 @@ export class MmoGameScene extends Phaser.Scene {
     } else {
       const v = this.mobs.get(id);
       if (!v) return;
-      // 絵文字はtint不可なのでピクッと拡大＋星
-      this.tweens.add({ targets: v.sprite, scaleX: 1.3, scaleY: 1.3, duration: 70, yoyo: true });
+      this.tweens.add({ targets: v.body, scaleX: 1.3, scaleY: 1.3, duration: 70, yoyo: true });
       this.spawnStarBurst(v.container.x, v.container.y);
       sfxHitNpc();
     }
