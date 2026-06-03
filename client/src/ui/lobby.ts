@@ -14,6 +14,7 @@ export interface LobbyConfig {
   hint: string;           // 画面下の操作説明
   enableCode?: boolean;   // プライベート作成＋コード参加を出すか（既定 false=クイックのみ）
   keyboardJoin?: boolean; // Enter キーでクイック参加できるようにする（クリック不要にしたい時）
+  area?: string;          // 参加エリア（mmo の town/field など）
   // 追加UI（アイテム凡例など）。レイアウトの基準として hint の y を渡す。
   extra?: (scene: Phaser.Scene, hintY: number) => void;
 }
@@ -67,7 +68,7 @@ export function buildLobby(scene: Phaser.Scene, cfg: LobbyConfig) {
   } else {
     const quickJoin = () => {
       enableSfx();
-      tryJoin(scene, status, () => joinPublicRoom(cfg.roomName, getName()), cfg.gameSceneKey, cleanup);
+      tryJoin(scene, status, () => joinPublicRoom(cfg.roomName, getName(), cfg.area), cfg.gameSceneKey, cleanup);
     };
     makeButton(scene, width / 2, 340, cfg.quickLabel, "#7ee787", quickJoin);
     if (cfg.keyboardJoin) {

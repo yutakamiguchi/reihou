@@ -44,9 +44,9 @@ export async function warmUp(onProgress?: (sec: number) => void): Promise<void> 
 
 // --- ルーム名を引数に取る汎用接続関数（各ミニゲームから利用） ---
 
-export async function joinPublicRoom(roomName: string, name: string): Promise<JoinResult> {
+export async function joinPublicRoom(roomName: string, name: string, area?: string): Promise<JoinResult> {
   const token = await authToken();
-  const room = await client.joinOrCreate(roomName, { name, code: "", token });
+  const room = await client.joinOrCreate(roomName, { name, code: "", token, area });
   await waitForInitialState(room);
   return { room };
 }

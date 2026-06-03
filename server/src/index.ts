@@ -23,7 +23,7 @@ const gameServer = new Server({
 
 gameServer.define("unspottable", GameRoom).filterBy(["code"]);
 gameServer.define("bomberman", BombermanRoom).filterBy(["code"]);
-gameServer.define("mmo", MmoRoom); // 共有ワールド（filterBy 無し・集約）
+gameServer.define("mmo", MmoRoom).filterBy(["area"]); // エリア別の共有ワールド（town/field）
 
 gameServer.listen(port).then(() => {
   console.log(`[server] listening on ws://localhost:${port}`);

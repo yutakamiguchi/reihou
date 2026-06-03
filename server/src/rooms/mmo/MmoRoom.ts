@@ -1,5 +1,5 @@
 import { Room, Client } from "colyseus";
-import { MmoState, MmoPlayer, Mob, Relic } from "../../schema/MmoState";
+import { MmoState, MmoPlayer, Mob, Relic, Gate } from "../../schema/MmoState";
 import { supabaseAdmin, isSupabaseConfigured, loadGameStats, saveGameStats } from "../../supabase";
 
 const SPIRIT_GAME_KEY = "spirit"; // game_stats のキー（霊宝の世界の進行）
@@ -100,11 +100,17 @@ export class MmoRoom extends Room<MmoState> {
   }>();
   private lastPersistAt = 0;
 
-  onCreate() {
+  onCreate(options: { code?: string; area?: string }) {
     this.setState(new MmoState());
+    const area = options?.area === "town" ? "town" : "field";
+    this.state.area = area;
+    if (area === "town") { this.state.mapWidth = 1600; this.state.mapHeight = 900; }
+    this.setupGates(area);
 
-    for (let i = 0; i < MOB_TARGET_COUNT; i++) this.spawnMob();
-    this.nextBossAt = Date.now() + 20000; // 最初のボスは20秒後から
+    if (this.isField()) {
+      for (let i = 0; i < MOB_TARGET_COUNT; i++) this.spawnMob();
+      this.nextBossAt = Date.now() + 20000; // 最初のボスは20秒後から
+    }
 
     this.onMessage("input", (client, message: Partial<InputState>) => {
       const input = this.inputs.get(client.sessionId);
@@ -301,6 +307,16 @@ export class MmoRoom extends Room<MmoState> {
     return b;
   }
 
+  private isField(): boolean { return this.state.area === "field"; }
+
+  // エリアごとのゲートを配置（近接＋Eで移動）。
+  private setupGates(area: string) {
+    const g = new Gate();
+    g.y = this.state.mapHeight / 2;
+    if (area === "town") { g.x = this.state.mapWidth - 120; g.toArea = "field"; g.label = "狩場へ"; this.state.gates.set("g", g); }
+    else { g.x = 120; g.toArea = "town"; g.label = "町へ"; this.state.gates.set("g", g); }
+  }
+
   // --- 1tick ---
 
   private update(_dt: number) {
@@ -341,6 +357,8 @@ export class MmoRoom extends Room<MmoState> {
       }
     });
 
+    // 狩場のみ：モンスター・霊宝（町は安全＝出ない）
+    if (this.isField()) {
     // モンスター
     this.state.mobs.forEach((m) => {
       if (!m.alive) return;
@@ -411,6 +429,7 @@ export class MmoRoom extends Room<MmoState> {
       this.spawnRelic();
       this.lastRelicSpawnAt = now + RELIC_SPAWN_COOLDOWN_MS;
     }
+    } // isField（狩場のみ）
 
     // プレイ時間を更新（整数秒なので変化は毎秒1回＝差分送信は軽い）
     this.state.players.forEach((p) => {

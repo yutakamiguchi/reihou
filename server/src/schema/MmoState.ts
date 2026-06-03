@@ -45,10 +45,20 @@ export class Relic extends Schema {
   @type("number") y: number = 0;
 }
 
+// エリア間を移動するゲート（近づいてEで移動）。
+export class Gate extends Schema {
+  @type("number") x: number = 0;
+  @type("number") y: number = 0;
+  @type("string") toArea: string = ""; // 移動先エリア
+  @type("string") label: string = "";  // 表示名
+}
+
 export class MmoState extends Schema {
   @type({ map: MmoPlayer }) players = new MapSchema<MmoPlayer>();
   @type({ map: Mob }) mobs = new MapSchema<Mob>();
   @type({ map: Relic }) relics = new MapSchema<Relic>();
+  @type({ map: Gate }) gates = new MapSchema<Gate>();
+  @type("string") area: string = "field"; // town(安全) / field(狩場)
   @type("string") phase: string = "world"; // 固定（waitForInitialState 通過用）
   @type("number") mapWidth: number = 2560;
   @type("number") mapHeight: number = 1440;

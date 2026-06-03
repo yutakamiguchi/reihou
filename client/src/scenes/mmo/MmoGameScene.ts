@@ -10,6 +10,8 @@ import { fetchCards, fetchMyCards, type Card } from "../../spirit";
 import { CARD_ICON, CARD_DESC, RARITY_META, RELIC_IMAGE_NAMES, relicTexKey } from "../spirit/cards-meta";
 import { ACHIEVEMENTS } from "../spirit/achievements";
 import { getMyProfile, getUser } from "../../auth";
+import { joinPublicRoom } from "../../net";
+import { loadPlayerName } from "../../ui/playerName";
 
 const PLAYER_SPEED = 140;
 const ENTITY_RADIUS = 14;
@@ -54,6 +56,10 @@ export class MmoGameScene extends Phaser.Scene {
   private players = new Map<string, PlayerView>();
   private mobs = new Map<string, MobView>();
   private relicViews = new Map<string, Phaser.GameObjects.Container>();
+  private gates: Array<{ x: number; y: number; toArea: string; label: string }> = [];
+  private gatePrompt?: Phaser.GameObjects.Text;
+  private nearGate: { toArea: string; label: string } | null = null;
+  private traveling = false;
   private worldLayer!: Phaser.GameObjects.Layer;
   private predictReady = false;
   private cardById = new Map<number, Card>(); // 霊宝メタ（ドロップ表示用）
@@ -86,6 +92,23 @@ export class MmoGameScene extends Phaser.Scene {
   init(data: { room: Room }) {
     this.room = data.room;
     this.myId = this.room.sessionId;
+    // エリア移動で同シーンを再起動するため、インスタンス状態を初期化
+    this.players.clear();
+    this.mobs.clear();
+    this.relicViews.clear();
+    this.gates = [];
+    this.nearGate = null;
+    this.traveling = false;
+    this.predictReady = false;
+    this.predict = null;
+    this.pending = [];
+    this.predictAccum = 0;
+    this.dirOrder = [];
+    this.lastInputSent = { up: false, down: false, left: false, right: false };
+    this.binderLayer = undefined;
+    this.statusLayer = undefined;
+    this.binderDetail = false;
+    this.cardById.clear();
   }
 
   preload() {
@@ -117,9 +140,10 @@ export class MmoGameScene extends Phaser.Scene {
     ensureCharAnims(this);
     const state: any = this.room.state;
     const mapW = state.mapWidth, mapH = state.mapHeight;
+    const isTown = state.area === "town";
 
-    // --- 背景（広いマップ。個別タイルは重いので大きい矩形＋疎なグリッド線） ---
-    this.add.rectangle(mapW / 2, mapH / 2, mapW, mapH, 0x3a6b3f);
+    // --- 背景（エリアで色を変える：町=暖色 / 狩場=緑） ---
+    this.add.rectangle(mapW / 2, mapH / 2, mapW, mapH, isTown ? 0x6b5a3f : 0x3a6b3f);
     const grid = this.add.graphics();
     grid.lineStyle(2, 0x000000, 0.08);
     for (let x = 0; x <= mapW; x += 128) grid.lineBetween(x, 0, x, mapH);
@@ -189,6 +213,15 @@ export class MmoGameScene extends Phaser.Scene {
     this.input.keyboard!.on("keydown-ONE", () => this.setBinderTab("common"));
     this.input.keyboard!.on("keydown-TWO", () => this.setBinderTab("rare"));
     this.input.keyboard!.on("keydown-THREE", () => this.setBinderTab("legend"));
+    this.input.keyboard!.on("keydown-E", () => this.tryTravel()); // ゲートで移動
+
+    // エリア名＋移動プロンプト（画面固定）
+    this.add.text(width / 2, 16, isTown ? "ホームタウン" : "狩場", {
+      fontSize: "20px", color: isTown ? "#ffd9a0" : "#a0ffb0", fontStyle: "bold", stroke: "#000", strokeThickness: 4,
+    }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(1000);
+    this.gatePrompt = this.add.text(width / 2, height - 70, "", {
+      fontSize: "18px", color: "#ffe066", fontStyle: "bold", stroke: "#000", strokeThickness: 4,
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(1500).setVisible(false);
 
     // --- state 購読 ---
     const $ = getStateCallbacks(this.room);
@@ -224,7 +257,10 @@ export class MmoGameScene extends Phaser.Scene {
     $(state).relics.onAdd((r: any, id: string) => this.addRelicView(id, r));
     $(state).relics.onRemove((_r: any, id: string) => this.removeRelicView(id));
 
-    this.room.onLeave(() => this.scene.start("MmoLobby"));
+    $(state).gates.onAdd((g: any) => this.addGateView(g));
+
+    // 移動中の room.leave では再joinするのでロビーへ戻さない
+    this.room.onLeave(() => { if (!this.traveling) this.scene.start("MmoLobby"); });
 
     // 霊宝：カードメタ取得＋ドロップ通知
     void fetchCards().then((cs) => { this.cardById = new Map(cs.map((c) => [c.id, c])); }).catch(() => {});
@@ -272,6 +308,36 @@ export class MmoGameScene extends Phaser.Scene {
     this.spawnStarBurst(c.x, c.y); // 拾得演出
     c.destroy();
     this.relicViews.delete(id);
+  }
+
+  // --- エリア移動ゲート ---
+
+  private addGateView(g: any) {
+    this.gates.push({ x: g.x, y: g.y, toArea: g.toArea, label: g.label });
+    const cont = this.add.container(g.x, g.y);
+    const ring = this.add.circle(0, 0, 38, 0x4a7ec9, 0.35).setStrokeStyle(3, 0xbfe0ff);
+    const door = this.add.text(0, 0, "🚪", { fontSize: "46px" }).setOrigin(0.5);
+    const label = this.add.text(0, -54, g.label, { fontSize: "16px", color: "#bfe0ff", fontStyle: "bold", stroke: "#000", strokeThickness: 3 }).setOrigin(0.5);
+    cont.add([ring, door, label]);
+    cont.setDepth(g.y);
+    this.worldLayer.add(cont);
+    this.tweens.add({ targets: ring, scale: { from: 0.85, to: 1.15 }, alpha: { from: 0.25, to: 0.5 }, duration: 1100, yoyo: true, repeat: -1 });
+  }
+
+  private async tryTravel() {
+    if (this.traveling || this.overlayOpen() || !this.nearGate) return;
+    this.traveling = true;
+    const { width, height } = this.scale;
+    this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.6).setScrollFactor(0).setDepth(9000);
+    this.add.text(width / 2, height / 2, "移動中…", { fontSize: "28px", color: "#ffffff", fontStyle: "bold" }).setOrigin(0.5).setScrollFactor(0).setDepth(9001);
+    try {
+      const { room } = await joinPublicRoom("mmo", loadPlayerName(), this.nearGate.toArea);
+      await this.room.leave();
+      this.scene.start("MmoGame", { room });
+    } catch {
+      this.traveling = false;
+      this.scene.start("MmoLobby");
+    }
   }
 
   // mob討伐などで霊宝を入手したときのポップアップ（画面固定）。
@@ -650,6 +716,20 @@ export class MmoGameScene extends Phaser.Scene {
         const sec = Math.max(0, (me.respawnAt - Date.now()) / 1000);
         this.deadText.setText(`やられた！\n復活まで ${sec.toFixed(1)}秒`);
       }
+    }
+
+    // ゲート近接判定（近づくと [E] プロンプト）
+    if (me && !this.overlayOpen() && !me.dead) {
+      let near: { toArea: string; label: string } | null = null;
+      for (const g of this.gates) {
+        if (Math.hypot(me.x - g.x, me.y - g.y) <= 80) { near = { toArea: g.toArea, label: g.label }; break; }
+      }
+      this.nearGate = near;
+      if (near) this.gatePrompt?.setText(`[E] ${near.label}`).setVisible(true);
+      else this.gatePrompt?.setVisible(false);
+    } else {
+      this.nearGate = null;
+      this.gatePrompt?.setVisible(false);
     }
   }
 
