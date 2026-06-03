@@ -7,7 +7,7 @@ import {
 import { sfxHitPlayer, sfxHitNpc, sfxScore, sfxFootstep, sfxRoundStart } from "../../sfx";
 import { addMoveKeys } from "../../ui/inputKeys";
 import { fetchCards, fetchMyCards, type Card } from "../../spirit";
-import { CARD_ICON, RARITY_META, RELIC_IMAGE_NAMES, relicTexKey } from "../spirit/cards-meta";
+import { CARD_ICON, CARD_DESC, RARITY_META, RELIC_IMAGE_NAMES, relicTexKey } from "../spirit/cards-meta";
 import { ACHIEVEMENTS } from "../spirit/achievements";
 import { getMyProfile, getUser } from "../../auth";
 
@@ -61,6 +61,7 @@ export class MmoGameScene extends Phaser.Scene {
   private statusLayer?: Phaser.GameObjects.Container;
   private binderTab: "common" | "rare" | "legend" = "common";
   private binderSel = 0; // 台帳の選択カーソル（現在タブのリスト内index）
+  private binderDetail = false; // 詳細表示中か
   private binderCache?: { cards: Card[]; owned: Map<number, number> };
 
   // HUD
@@ -172,8 +173,15 @@ export class MmoGameScene extends Phaser.Scene {
     this.input.keyboard!.on("keydown-S", () => selKey(0, 1));
     this.input.keyboard!.on("keydown-ESC", () => {
       if (this.statusLayer) this.closeStatus();
+      else if (this.binderLayer && this.binderDetail) { this.binderDetail = false; this.drawBinder(); } // 詳細→一覧
       else if (this.binderLayer) this.closeBinder();
       else this.room.leave();
+    });
+    // Enter：台帳一覧→選択中の霊宝の詳細表示（トグル）
+    this.input.keyboard!.on("keydown-ENTER", () => {
+      if (!this.binderLayer || !this.binderCache) return;
+      this.binderDetail = !this.binderDetail;
+      this.drawBinder();
     });
     this.input.keyboard!.on("keydown-B", () => this.toggleBinder());
     this.input.keyboard!.on("keydown-C", () => this.toggleStatus());
@@ -440,6 +448,7 @@ export class MmoGameScene extends Phaser.Scene {
     const layer = this.add.container(0, 0).setScrollFactor(0).setDepth(7000);
     this.binderLayer = layer;
     this.binderSel = 0;
+    this.binderDetail = false;
     this.binderCache = undefined;
     this.drawBinder(); // まず「読み込み中」枠を描く
     try {
@@ -452,11 +461,12 @@ export class MmoGameScene extends Phaser.Scene {
     }
   }
 
-  // 台帳の中身を（キャッシュから）描き直す。選択中の霊宝は拡大＋ゆっくり反時計回り。
+  // 台帳の中身を（キャッシュから）描き直す。詳細表示中は detail を描く。
   private drawBinder(errorMsg?: string) {
     const layer = this.binderLayer;
     if (!layer) return;
     layer.removeAll(true); // 既存の子（と回転tween）を破棄して描き直す
+    if (this.binderDetail && this.binderCache && !errorMsg) { this.drawBinderDetail(); return; }
     const { width, height } = this.scale;
     const cx = width / 2;
 
@@ -499,7 +509,6 @@ export class MmoGameScene extends Phaser.Scene {
     const totalW = cols * cellW + (cols - 1) * gapX;
     const startX = (width - totalW) / 2 + cellW / 2;
     const startY = 180;
-    let selIcon: Phaser.GameObjects.GameObject | null = null;
     list.forEach((c, i) => {
       const col = i % cols, row = Math.floor(i / cols);
       const x = startX + col * (cellW + gapX);
@@ -510,24 +519,55 @@ export class MmoGameScene extends Phaser.Scene {
       const isSel = i === this.binderSel;
       const bg = this.add.rectangle(x, y, cellW, cellH, isSel ? 0x2a2150 : 0x1c1530, has || isSel ? 0.98 : 0.5)
         .setStrokeStyle(isSel ? 3 : 2, isSel ? 0xffe066 : (has ? meta.colorNum : 0x3a3550));
+      const icon = this.makeRelicIcon(x, y - 22, c.name, c.id, isSel ? 62 : 56, !has);
       const name = this.add.text(x, y + 30, has ? c.name : "？？？", { fontSize: "13px", color: has ? "#ece7f5" : "#4a4360", align: "center", wordWrap: { width: cellW - 12 } }).setOrigin(0.5);
-      layer.add([bg, name]);
-      if (isSel) {
-        // 選択中：大きく＋ゆっくり反時計回り
-        selIcon = this.makeRelicIcon(x, y - 8, c.name, c.id, 92, !has);
-        layer.add(selIcon);
-        this.tweens.add({ targets: selIcon, angle: -360, duration: 6000, repeat: -1 });
-        this.tweens.add({ targets: selIcon, scale: { from: (selIcon as any).scale * 0.8, to: (selIcon as any).scale }, duration: 220, ease: "Back.easeOut" });
-      } else {
-        layer.add(this.makeRelicIcon(x, y - 22, c.name, c.id, 56, !has));
-      }
+      layer.add([bg, icon, name]);
       if (count > 1) {
         layer.add(this.add.text(x + cellW / 2 - 16, y - cellH / 2 + 11, `×${count}`, {
           fontSize: "11px", color: "#15101f", fontStyle: "bold", backgroundColor: "#e8b04b", padding: { x: 4, y: 1 } as any,
         }).setOrigin(0.5));
       }
     });
-    if (selIcon) layer.bringToTop(selIcon); // 拡大アイコンを最前面に
+    layer.add(this.add.text(cx, height - 30, "Enter で選択中の霊宝を詳細表示", { fontSize: "13px", color: "#7ee787" }).setOrigin(0.5));
+  }
+
+  // 詳細表示：左に拡大した霊宝（水平＝縦軸まわりに反時計回転、90度で縦線）、右に説明文。
+  private drawBinderDetail() {
+    const layer = this.binderLayer!;
+    const cache = this.binderCache!;
+    const { width, height } = this.scale;
+    layer.add(this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.9).setInteractive());
+
+    const list = cache.cards.filter((c) => c.rarity === this.binderTab);
+    this.binderSel = Math.max(0, Math.min(this.binderSel, list.length - 1));
+    const c = list[this.binderSel];
+    if (!c) return;
+    const count = cache.owned.get(c.id) ?? 0;
+    const has = count > 0;
+    const meta = RARITY_META[c.rarity];
+    const cy = height / 2 - 10;
+    const leftX = width * 0.28;
+
+    // 左：拡大した霊宝。縦軸まわりの回転を scaleX=cos で擬似（90度で縦線、反時計）
+    const icon = this.makeRelicIcon(leftX, cy, c.name, c.id, 300, !has);
+    layer.add(icon);
+    const base = (icon as any).scaleX as number;
+    const spin = { t: 0 };
+    this.tweens.add({
+      targets: spin, t: 1, duration: 4500, repeat: -1, ease: "Linear",
+      onUpdate: () => { if ((icon as any).active) (icon as any).scaleX = base * Math.cos(spin.t * Math.PI * 2); },
+    });
+    layer.add(this.add.text(leftX, cy + 185, meta.label, { fontSize: "20px", color: meta.colorStr, fontStyle: "bold" }).setOrigin(0.5));
+
+    // 右：説明
+    const rx = width * 0.55;
+    layer.add(this.add.text(rx, cy - 130, has ? c.name : "？？？", { fontSize: "36px", color: has ? "#ece7f5" : "#6a6285", fontStyle: "bold" }).setOrigin(0, 0.5));
+    layer.add(this.add.text(rx, cy - 78, `レアリティ：${meta.label}`, { fontSize: "18px", color: meta.colorStr }).setOrigin(0, 0.5));
+    const desc = has ? (CARD_DESC[c.id] ?? "失われた霊宝のひとつ。") : "未発見の霊宝。集めて解き明かそう。";
+    layer.add(this.add.text(rx, cy - 40, desc, { fontSize: "19px", color: "#cccccc", wordWrap: { width: width * 0.4 }, lineSpacing: 8 }).setOrigin(0, 0));
+    layer.add(this.add.text(rx, cy + 60, `世界総数：${c.world_supply}\n残り在庫：${c.world_reserve}\n所持：${count}`, { fontSize: "16px", color: "#9b93b0", lineSpacing: 8 }).setOrigin(0, 0));
+
+    layer.add(this.add.text(width / 2, height - 30, "← → / WASD で隣の霊宝　・　ESC または Enter で一覧へ", { fontSize: "13px", color: "#6a6285" }).setOrigin(0.5));
   }
 
   update(_t: number, dtMs: number) {
