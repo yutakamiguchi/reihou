@@ -129,6 +129,13 @@ export class MmoRoom extends Room<MmoState> {
       input.right = !!message.right;
     });
 
+    this.onMessage("chat", (client, message: { text?: string }) => {
+      const p = this.state.players.get(client.sessionId);
+      const text = (message?.text ?? "").toString().replace(/\s+/g, " ").trim().slice(0, 120);
+      if (!p || !text) return;
+      this.broadcast("chat", { name: p.name, text });
+    });
+
     this.onMessage("attack", (client) => {
       const input = this.inputs.get(client.sessionId);
       if (!input) return;

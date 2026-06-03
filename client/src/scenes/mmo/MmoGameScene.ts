@@ -6,6 +6,7 @@ import {
 } from "../../character";
 import { sfxHitPlayer, sfxHitNpc, sfxScore, sfxFootstep, sfxRoundStart } from "../../sfx";
 import { addMoveKeys } from "../../ui/inputKeys";
+import { makeInput } from "../../ui/nameInput";
 import { fetchCards, fetchMyCards, type Card } from "../../spirit";
 import { CARD_ICON, CARD_DESC, RARITY_META, RELIC_IMAGE_NAMES, relicTexKey } from "../spirit/cards-meta";
 import { ACHIEVEMENTS } from "../spirit/achievements";
@@ -67,6 +68,10 @@ export class MmoGameScene extends Phaser.Scene {
   private gatePrompt?: Phaser.GameObjects.Text;
   private nearGate: { toArea: string; label: string } | null = null;
   private traveling = false;
+  private chatOpen = false;
+  private chatInput?: HTMLInputElement;
+  private chatLog!: Phaser.GameObjects.Text;
+  private chatLines: string[] = [];
   private worldLayer!: Phaser.GameObjects.Layer;
   private predictReady = false;
   private cardById = new Map<number, Card>(); // 霊宝メタ（ドロップ表示用）
@@ -112,6 +117,10 @@ export class MmoGameScene extends Phaser.Scene {
     this.statusLayer = undefined;
     this.binderDetail = false;
     this.cardById.clear();
+    this.chatInput?.remove();
+    this.chatInput = undefined;
+    this.chatOpen = false;
+    this.chatLines = [];
   }
 
   preload() {
@@ -230,6 +239,19 @@ export class MmoGameScene extends Phaser.Scene {
       fontSize: "18px", color: "#ffe066", fontStyle: "bold", stroke: "#000", strokeThickness: 4,
     }).setOrigin(0.5).setScrollFactor(0).setDepth(1500).setVisible(false);
 
+    // チャットログ（左下）＋「/」で入力
+    this.chatLog = this.add.text(12, height - 120, "", {
+      fontSize: "14px", color: "#ffffff", stroke: "#000", strokeThickness: 3, lineSpacing: 4,
+    }).setOrigin(0, 1).setScrollFactor(0).setDepth(1400);
+    this.add.text(12, height - 10, "/ でチャット", { fontSize: "12px", color: "#888888" }).setScrollFactor(0).setDepth(1000).setOrigin(0, 1);
+    this.input.keyboard!.on("keydown", (e: KeyboardEvent) => {
+      if (e.key === "/" && !this.chatOpen && !this.overlayOpen() && !this.traveling) {
+        e.preventDefault();
+        this.openChat();
+      }
+    });
+    this.events.once("shutdown", () => { this.chatInput?.remove(); this.chatInput = undefined; });
+
     // --- state 購読 ---
     const $ = getStateCallbacks(this.room);
 
@@ -273,6 +295,7 @@ export class MmoGameScene extends Phaser.Scene {
     void fetchCards().then((cs) => { this.cardById = new Map(cs.map((c) => [c.id, c])); }).catch(() => {});
     this.room.onMessage("relicFound", (m: { cardId: number }) => this.showRelicFound(m.cardId));
     this.room.onMessage("achievement", (m: { id: string; desc: string; cardId: number | null }) => this.showAchievement(m));
+    this.room.onMessage("chat", (m: { name: string; text: string }) => this.addChatLine(`${m.name}: ${m.text}`));
   }
 
   // 達成課題クリア時のポップアップ。
@@ -495,6 +518,42 @@ export class MmoGameScene extends Phaser.Scene {
 
   private overlayOpen(): boolean { return !!(this.binderLayer || this.statusLayer); }
 
+  // --- チャット（/ で開く）---
+
+  private addChatLine(line: string) {
+    this.chatLines.push(line.slice(0, 140));
+    if (this.chatLines.length > 7) this.chatLines.shift();
+    this.chatLog.setText(this.chatLines.join("\n"));
+  }
+
+  private openChat() {
+    if (this.chatOpen) return;
+    this.chatOpen = true;
+    this.input.keyboard!.enabled = false; // ゲーム操作を止めて入力に専念
+    const { width, height } = this.scale;
+    const el = makeInput(this, "メッセージ（Enter送信 / Escで閉じる）", 120, "", width / 2, height - 40, 460);
+    this.chatInput = el;
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); this.sendChat(); }
+      else if (e.key === "Escape") { e.preventDefault(); this.closeChat(); }
+    });
+    setTimeout(() => el.focus(), 0);
+  }
+
+  private sendChat() {
+    const text = (this.chatInput?.value ?? "").trim();
+    if (text) this.room.send("chat", { text });
+    this.closeChat();
+  }
+
+  private closeChat() {
+    if (!this.chatOpen) return;
+    this.chatOpen = false;
+    this.chatInput?.remove();
+    this.chatInput = undefined;
+    this.input.keyboard!.enabled = true;
+  }
+
   private static readonly BINDER_COLS = 9;
 
   // キーで台帳のレアリティタブを切替（開いている時だけ有効。再取得せず再描画）。
@@ -647,8 +706,8 @@ export class MmoGameScene extends Phaser.Scene {
     const state: any = this.room.state;
     const me: any = state.players.get(this.myId);
 
-    // 入力送信（台帳/ステータスを開いている間は移動しない＝矢印は選択に使う）
-    const ov = this.overlayOpen();
+    // 入力送信（台帳/ステータス/チャット中は移動しない）
+    const ov = this.overlayOpen() || this.chatOpen;
     const up = !ov && (this.keys.W.isDown || this.keys.UP.isDown);
     const down = !ov && (this.keys.S.isDown || this.keys.DOWN.isDown);
     const left = !ov && (this.keys.A.isDown || this.keys.LEFT.isDown);
