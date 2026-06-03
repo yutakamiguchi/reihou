@@ -40,7 +40,13 @@ export const CARD_DESC: Record<number, string> = {
 // イラスト(PNG)を用意したカード名。client/public/relics/<名前>.png に置く。
 // ここに名前を足すと画像表示に切り替わる（無いカードは絵文字のまま）。
 export const RELIC_IMAGE_NAMES: string[] = [
+  // 秘宝
   "不死鳥の心臓",
+  // 希少（既存5）
+  "月光の鏡", "双子の炎", "霧の女王", "雷鳴の角笛", "影縫いの針",
+  // 希少（追加）
+  "翡翠の勾玉", "鷹の眼", "氷結の宝珠", "黒曜石の刃", "琥珀の蝶",
+  "銀狼の牙", "古竜の鱗", "海鳴りの法螺貝", "狐火の提灯", "孔雀の扇", "隕鉄の指輪",
 ];
 export const relicTexKey = (name: string) => `relic:${name}`;
 
