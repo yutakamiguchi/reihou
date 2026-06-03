@@ -165,6 +165,10 @@ export class MmoGameScene extends Phaser.Scene {
     });
     this.input.keyboard!.on("keydown-B", () => this.toggleBinder());
     this.input.keyboard!.on("keydown-C", () => this.toggleStatus());
+    // 台帳のタブ切替（クリック不要）：1=普通 / 2=希少 / 3=秘宝
+    this.input.keyboard!.on("keydown-ONE", () => this.setBinderTab("common"));
+    this.input.keyboard!.on("keydown-TWO", () => this.setBinderTab("rare"));
+    this.input.keyboard!.on("keydown-THREE", () => this.setBinderTab("legend"));
 
     // --- state 購読 ---
     const $ = getStateCallbacks(this.room);
@@ -396,6 +400,13 @@ export class MmoGameScene extends Phaser.Scene {
     this.binderLayer = undefined;
   }
 
+  // キーで台帳のレアリティタブを切替（開いている時だけ有効）。
+  private setBinderTab(tab: "common" | "rare" | "legend") {
+    if (!this.binderLayer || this.binderTab === tab) return;
+    this.binderTab = tab;
+    void this.openBinder();
+  }
+
   private async openBinder() {
     this.closeStatus(); // 同時には開かない
     const { width, height } = this.scale;
@@ -415,21 +426,22 @@ export class MmoGameScene extends Phaser.Scene {
     close.on("pointerdown", () => this.closeBinder());
     layer.add(close);
 
-    // レアリティ・タブ
-    const tabs: Array<{ key: "common" | "rare" | "legend"; label: string }> = [
-      { key: "common", label: "普通" }, { key: "rare", label: "希少" }, { key: "legend", label: "秘宝" },
+    // レアリティ・タブ（キー 1/2/3 で切替。クリックも可）
+    const tabs: Array<{ key: "common" | "rare" | "legend"; label: string; num: string }> = [
+      { key: "common", label: "普通", num: "1" }, { key: "rare", label: "希少", num: "2" }, { key: "legend", label: "秘宝", num: "3" },
     ];
     tabs.forEach((t, i) => {
       const sel = this.binderTab === t.key;
-      const btn = this.add.text(cx - 120 + i * 120, 92, t.label, {
+      const btn = this.add.text(cx - 130 + i * 130, 92, `${t.num}: ${t.label}`, {
         fontSize: "18px", fontStyle: "bold",
         color: sel ? "#15101f" : RARITY_META[t.key].colorStr,
         backgroundColor: sel ? RARITY_META[t.key].colorStr : "#1c1530",
-        padding: { x: 16, y: 6 } as any,
+        padding: { x: 14, y: 6 } as any,
       }).setOrigin(0.5).setInteractive({ useHandCursor: true });
-      btn.on("pointerdown", () => { this.binderTab = t.key; void this.openBinder(); });
+      btn.on("pointerdown", () => this.setBinderTab(t.key));
       layer.add(btn);
     });
+    layer.add(this.add.text(cx, 120, "1 / 2 / 3 キーで切替　・　B で閉じる", { fontSize: "12px", color: "#6a6285" }).setOrigin(0.5));
 
     try {
       const [cards, mine] = await Promise.all([fetchCards(), fetchMyCards()]);
