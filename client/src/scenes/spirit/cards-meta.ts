@@ -16,6 +16,13 @@ export const CARD_ICON: Record<number, string> = {
   46: "👑", 47: "🌱", 48: "👁️", 49: "🕰️", 50: "🏆",
 };
 
+// イラスト(PNG)を用意したカード名。client/public/relics/<名前>.png に置く。
+// ここに名前を足すと画像表示に切り替わる（無いカードは絵文字のまま）。
+export const RELIC_IMAGE_NAMES: string[] = [
+  "不死鳥の心臓",
+];
+export const relicTexKey = (name: string) => `relic:${name}`;
+
 export const RARITY_META: Record<Rarity, { label: string; colorStr: string; colorNum: number }> = {
   common: { label: "普通", colorStr: "#8a93a8", colorNum: 0x8a93a8 },
   rare:   { label: "希少", colorStr: "#5fb6c4", colorNum: 0x5fb6c4 },

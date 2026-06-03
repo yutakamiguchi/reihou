@@ -7,7 +7,7 @@ import {
 import { sfxHitPlayer, sfxHitNpc, sfxScore, sfxFootstep, sfxRoundStart } from "../../sfx";
 import { addMoveKeys } from "../../ui/inputKeys";
 import { fetchCards, fetchMyCards, type Card } from "../../spirit";
-import { CARD_ICON, RARITY_META } from "../spirit/cards-meta";
+import { CARD_ICON, RARITY_META, RELIC_IMAGE_NAMES, relicTexKey } from "../spirit/cards-meta";
 import { ACHIEVEMENTS } from "../spirit/achievements";
 import { getMyProfile, getUser } from "../../auth";
 
@@ -89,6 +89,24 @@ export class MmoGameScene extends Phaser.Scene {
     preloadCharTextures(this);
     // モンスター画像があれば使う（無ければキャラ緑染めで代用）
     this.load.image("mob", "/char/mob_idle.png");
+    // 霊宝イラスト（用意されたものだけ。無いカードは絵文字表示）
+    for (const name of RELIC_IMAGE_NAMES) {
+      this.load.image(relicTexKey(name), `/relics/${encodeURIComponent(name)}.png`);
+    }
+  }
+
+  // 霊宝のアイコン：イラストがあればスプライト、無ければ絵文字。boxPx 内に収める。
+  private makeRelicIcon(x: number, y: number, name: string, cardId: number, boxPx: number, dim: boolean): Phaser.GameObjects.GameObject {
+    const key = relicTexKey(name);
+    if (name && this.textures.exists(key)) {
+      const sp = this.add.sprite(x, y, key).setOrigin(0.5);
+      sp.setScale(boxPx / Math.max(sp.width, sp.height));
+      if (dim) sp.setAlpha(0.25);
+      return sp;
+    }
+    const t = this.add.text(x, y, CARD_ICON[cardId] ?? "❔", { fontSize: `${Math.round(boxPx * 0.62)}px` }).setOrigin(0.5);
+    if (dim) t.setAlpha(0.22);
+    return t;
   }
 
   create() {
@@ -239,7 +257,7 @@ export class MmoGameScene extends Phaser.Scene {
     const cx = this.scale.width / 2;
     const cont = this.add.container(cx, 150).setScrollFactor(0).setDepth(5000);
     const bg = this.add.rectangle(0, 0, 320, 92, 0x15101f, 0.96).setStrokeStyle(3, meta?.colorNum ?? 0xe8b04b);
-    const icon = this.add.text(-128, 0, CARD_ICON[cardId] ?? "✨", { fontSize: "42px" }).setOrigin(0.5);
+    const icon = this.makeRelicIcon(-128, 0, c?.name ?? "", cardId, 64, false);
     const title = this.add.text(-92, -18, "✦ 霊宝を発見！", { fontSize: "16px", color: "#e8c87e", fontStyle: "bold" }).setOrigin(0, 0.5);
     const name = this.add.text(-92, 14, c?.name ?? `#${cardId}`, { fontSize: "22px", color: "#ece7f5", fontStyle: "bold" }).setOrigin(0, 0.5);
     cont.add([bg, icon, title, name]);
@@ -437,7 +455,7 @@ export class MmoGameScene extends Phaser.Scene {
         const has = count > 0;
         const meta = RARITY_META[c.rarity];
         const bg = this.add.rectangle(x, y, cellW, cellH, 0x1c1530, has ? 0.98 : 0.5).setStrokeStyle(2, has ? meta.colorNum : 0x3a3550);
-        const icon = this.add.text(x, y - 26, CARD_ICON[c.id] ?? "❔", { fontSize: "34px" }).setOrigin(0.5).setAlpha(has ? 1 : 0.22);
+        const icon = this.makeRelicIcon(x, y - 22, c.name, c.id, 56, !has);
         const name = this.add.text(x, y + 26, has ? c.name : "？？？", { fontSize: "13px", color: has ? "#ece7f5" : "#4a4360", align: "center", wordWrap: { width: cellW - 12 } }).setOrigin(0.5);
         layer.add([bg, icon, name]);
         if (count > 1) {
