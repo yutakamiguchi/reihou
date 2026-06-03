@@ -18,13 +18,18 @@ const ENTITY_RADIUS = 14;
 const CHAR_DISPLAY_H = 56;
 const MOB_DISPLAY_H = 52;
 
-// 敵の種別ごとの見た目（色・大きさ・ボス表示）。server の MOB_KINDS と対応。
-const MOB_STYLE: Record<string, { tint: number; scale: number; label?: string }> = {
-  grunt: { tint: 0x88dd88, scale: 1.0 },
-  swift: { tint: 0x66ccff, scale: 0.85 },
-  tank:  { tint: 0xc8a06a, scale: 1.45 },
-  brute: { tint: 0xe0644a, scale: 1.15 },
-  boss:  { tint: 0xb05ad0, scale: 2.1, label: "災厄の主" },
+// 敵の種別ごとの見た目（絵文字＝プレイヤーと別の姿・色・大きさ）。server の MOB_KINDS と対応。
+const MOB_STYLE: Record<string, { emoji: string; tint: number; scale: number; label?: string }> = {
+  grunt:    { emoji: "👻", tint: 0x88dd88, scale: 1.0 },
+  swift:    { emoji: "🦇", tint: 0x9b7ad0, scale: 0.9 },
+  tank:     { emoji: "🗿", tint: 0xc8a06a, scale: 1.5 },
+  brute:    { emoji: "👹", tint: 0xe0644a, scale: 1.2 },
+  slime:    { emoji: "🟢", tint: 0x6be36b, scale: 0.85 },
+  spider:   { emoji: "🕷️", tint: 0x8a5ad0, scale: 1.0 },
+  skeleton: { emoji: "💀", tint: 0xdddddd, scale: 1.05 },
+  scorpion: { emoji: "🦂", tint: 0xd0a85a, scale: 1.25 },
+  serpent:  { emoji: "🐍", tint: 0x7ad06b, scale: 1.15 },
+  boss:     { emoji: "🐲", tint: 0xb05ad0, scale: 2.1, label: "災厄の主" },
 };
 
 interface PlayerView {
@@ -43,11 +48,9 @@ interface PlayerView {
 interface MobView {
   container: Phaser.GameObjects.Container;
   shadow: Phaser.GameObjects.Ellipse;
-  sprite: Phaser.GameObjects.Sprite;
+  sprite: Phaser.GameObjects.Text; // 絵文字
   hpBg: Phaser.GameObjects.Rectangle;
   hpFg: Phaser.GameObjects.Rectangle;
-  dir: Dir;
-  flip: boolean;
 }
 
 export class MmoGameScene extends Phaser.Scene {
@@ -689,7 +692,7 @@ export class MmoGameScene extends Phaser.Scene {
       v.container.setAlpha(p.dead ? 0.3 : 1);
     });
 
-    // モンスター描画
+    // モンスター描画（絵文字。位置だけ補間）
     state.mobs.forEach((m: any, id: string) => {
       const v = this.mobs.get(id);
       if (!v) return;
@@ -697,9 +700,6 @@ export class MmoGameScene extends Phaser.Scene {
       const cy = Phaser.Math.Linear(v.container.y, m.y, 0.3);
       v.container.setPosition(cx, cy);
       v.container.setDepth(cy);
-      const d = dirFromAngle(m.dir);
-      v.dir = d.dir; v.flip = d.flip;
-      applyCharPose(v.sprite, v.dir, "walk", v.flip, MOB_DISPLAY_H);
     });
 
     // HUD
@@ -797,24 +797,25 @@ export class MmoGameScene extends Phaser.Scene {
 
   private addMobView(id: string, m: any) {
     const style = MOB_STYLE[m.kind] ?? MOB_STYLE.grunt;
+    const fontPx = Math.round(40 * style.scale);
+    const cyOff = -fontPx * 0.35;
     const container = this.add.container(m.x, m.y);
-    const shadow = this.add.ellipse(0, 0, 22, 7, 0x000000, 0.4);
-    const sprite = this.add.sprite(0, 0, CHAR_INITIAL_TEX).setOrigin(0.5, 0.96);
-    applyCharPose(sprite, "front", "idle", false, MOB_DISPLAY_H);
-    sprite.setTint(style.tint); // 種別ごとの色
-    const hpBg = this.add.rectangle(0, -MOB_DISPLAY_H - 6, 30, 4, 0x000000, 0.6);
-    const hpFg = this.add.rectangle(-15, -MOB_DISPLAY_H - 6, 30, 4, 0xff7777).setOrigin(0, 0.5);
-    container.add([shadow, sprite, hpBg, hpFg]);
+    const shadow = this.add.ellipse(0, 4, 22 * style.scale, 8 * style.scale, 0x000000, 0.4);
+    const aura = this.add.circle(0, cyOff, fontPx * 0.62, style.tint, 0.16); // 種別色のオーラ
+    const sprite = this.add.text(0, cyOff, style.emoji, { fontSize: `${fontPx}px` }).setOrigin(0.5);
+    const barY = cyOff - fontPx * 0.55 - 6;
+    const hpBg = this.add.rectangle(0, barY, 30, 4, 0x000000, 0.6);
+    const hpFg = this.add.rectangle(-15, barY, 30, 4, 0xff7777).setOrigin(0, 0.5);
+    container.add([shadow, aura, sprite, hpBg, hpFg]);
     if (style.label) {
-      const lbl = this.add.text(0, -MOB_DISPLAY_H - 18, style.label, {
+      container.add(this.add.text(0, barY - 14, style.label, {
         fontSize: "13px", color: "#e0b3ff", fontStyle: "bold", stroke: "#000", strokeThickness: 3,
-      }).setOrigin(0.5);
-      container.add(lbl);
+      }).setOrigin(0.5));
     }
-    container.setScale(style.scale); // 種別ごとの大きさ
     this.worldLayer.add(container);
-    this.mobs.set(id, { container, shadow, sprite, hpBg, hpFg, dir: "front", flip: false });
+    this.mobs.set(id, { container, shadow, sprite, hpBg, hpFg });
     this.updateMobHpBar(id, m);
+    this.tweens.add({ targets: sprite, y: cyOff - 4, duration: 800 + Math.random() * 400, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
   }
 
   private updateMobHpBar(id: string, m: any) {
@@ -836,20 +837,22 @@ export class MmoGameScene extends Phaser.Scene {
   // --- FX ---
 
   private flashHit(id: string, isPlayer: boolean) {
-    const v = isPlayer ? this.players.get(id) : this.mobs.get(id);
-    if (!v) return;
-    const sprite = v.sprite;
-    const prevTint = sprite.tintTopLeft;
-    const wasTinted = sprite.isTinted;
-    sprite.setTintFill(0xffffff);
-    this.time.delayedCall(110, () => {
-      if (!sprite.active) return;
-      if (wasTinted && !isPlayer) sprite.setTint(prevTint);
-      else sprite.clearTint();
-    });
-    this.spawnStarBurst(v.container.x, v.container.y);
-    if (isPlayer) { sfxHitPlayer(); this.cameras.main.shake(80, 0.004); }
-    else sfxHitNpc();
+    if (isPlayer) {
+      const v = this.players.get(id);
+      if (!v) return;
+      const sprite = v.sprite;
+      sprite.setTintFill(0xffffff);
+      this.time.delayedCall(110, () => { if (sprite.active) sprite.clearTint(); });
+      this.spawnStarBurst(v.container.x, v.container.y);
+      sfxHitPlayer(); this.cameras.main.shake(80, 0.004);
+    } else {
+      const v = this.mobs.get(id);
+      if (!v) return;
+      // 絵文字はtint不可なのでピクッと拡大＋星
+      this.tweens.add({ targets: v.sprite, scaleX: 1.3, scaleY: 1.3, duration: 70, yoyo: true });
+      this.spawnStarBurst(v.container.x, v.container.y);
+      sfxHitNpc();
+    }
   }
 
   private spawnStarBurst(x: number, y: number) {

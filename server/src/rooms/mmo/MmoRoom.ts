@@ -48,14 +48,22 @@ interface MobKindDef {
   expMul: number; drop: number; rareBias: number;
 }
 const MOB_KINDS: Record<string, MobKindDef> = {
-  grunt: { name: "迷い霊",   maxHp: 30,  atk: 5,  speed: 62,  expMul: 1.0, drop: 0.45, rareBias: 0 },
-  swift: { name: "疾風鬼",   maxHp: 18,  atk: 4,  speed: 104, expMul: 1.2, drop: 0.45, rareBias: 0 },
-  tank:  { name: "岩石巨人", maxHp: 90,  atk: 8,  speed: 38,  expMul: 2.2, drop: 0.75, rareBias: 0.5 },
-  brute: { name: "紅蓮鬼",   maxHp: 55,  atk: 11, speed: 58,  expMul: 1.8, drop: 0.6,  rareBias: 0.3 },
-  boss:  { name: "災厄の主", maxHp: 280, atk: 16, speed: 48,  expMul: 6.0, drop: 1.0,  rareBias: 1.0 },
+  grunt:    { name: "迷い霊",   maxHp: 30,  atk: 5,  speed: 62,  expMul: 1.0, drop: 0.45, rareBias: 0 },
+  swift:    { name: "妖蝙蝠",   maxHp: 18,  atk: 4,  speed: 104, expMul: 1.2, drop: 0.45, rareBias: 0 },
+  tank:     { name: "岩石巨人", maxHp: 90,  atk: 8,  speed: 38,  expMul: 2.2, drop: 0.75, rareBias: 0.5 },
+  brute:    { name: "紅蓮鬼",   maxHp: 55,  atk: 11, speed: 58,  expMul: 1.8, drop: 0.6,  rareBias: 0.3 },
+  // 追加5種
+  slime:    { name: "泥スライム", maxHp: 22, atk: 4,  speed: 50,  expMul: 0.9, drop: 0.40, rareBias: 0 },
+  spider:   { name: "毒蜘蛛",   maxHp: 32,  atk: 7,  speed: 90,  expMul: 1.4, drop: 0.5,  rareBias: 0.1 },
+  skeleton: { name: "骸骨剣士", maxHp: 48,  atk: 9,  speed: 60,  expMul: 1.6, drop: 0.55, rareBias: 0.2 },
+  scorpion: { name: "砂蠍",     maxHp: 72,  atk: 10, speed: 46,  expMul: 2.0, drop: 0.7,  rareBias: 0.4 },
+  serpent:  { name: "大蛇",     maxHp: 60,  atk: 12, speed: 84,  expMul: 2.0, drop: 0.65, rareBias: 0.35 },
+  boss:     { name: "災厄の主", maxHp: 280, atk: 16, speed: 48,  expMul: 6.0, drop: 1.0,  rareBias: 1.0 },
 };
+// 出現率（弱いほど多い）。ボスは別枠。
 const MOB_SPAWN_WEIGHTS: Array<[string, number]> = [
-  ["grunt", 50], ["swift", 22], ["tank", 16], ["brute", 12],
+  ["grunt", 26], ["slime", 22], ["swift", 14], ["spider", 12], ["skeleton", 9],
+  ["brute", 6], ["tank", 5], ["scorpion", 3], ["serpent", 1],
 ];
 function pickMobKind(): string {
   const total = MOB_SPAWN_WEIGHTS.reduce((s, [, w]) => s + w, 0);
