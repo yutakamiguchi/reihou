@@ -13,6 +13,7 @@ export interface LobbyConfig {
   quickLabel: string;     // クイック参加ボタンの文言
   hint: string;           // 画面下の操作説明
   enableCode?: boolean;   // プライベート作成＋コード参加を出すか（既定 false=クイックのみ）
+  keyboardJoin?: boolean; // Enter キーでクイック参加できるようにする（クリック不要にしたい時）
   // 追加UI（アイテム凡例など）。レイアウトの基準として hint の y を渡す。
   extra?: (scene: Phaser.Scene, hintY: number) => void;
 }
@@ -64,9 +65,19 @@ export function buildLobby(scene: Phaser.Scene, cfg: LobbyConfig) {
       tryJoin(scene, status, () => joinRoomByCode(cfg.roomName, getName(), code), cfg.gameSceneKey, cleanup);
     });
   } else {
-    makeButton(scene, width / 2, 340, cfg.quickLabel, "#7ee787", () => {
+    const quickJoin = () => {
+      enableSfx();
       tryJoin(scene, status, () => joinPublicRoom(cfg.roomName, getName()), cfg.gameSceneKey, cleanup);
-    });
+    };
+    makeButton(scene, width / 2, 340, cfg.quickLabel, "#7ee787", quickJoin);
+    if (cfg.keyboardJoin) {
+      // Enter で参加（クリック不要）。名前入力にフォーカスがある場合も拾えるよう両方に張る。
+      scene.input.keyboard?.on("keydown-ENTER", quickJoin);
+      nameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") quickJoin(); });
+      scene.add.text(width / 2, 392, "Enter キーで入る", {
+        fontSize: "14px", color: "#7ee787",
+      }).setOrigin(0.5);
+    }
   }
 
   // 追加UI（hint より上に余白を取る場合は hint を上げる）
