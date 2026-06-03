@@ -15,6 +15,15 @@ const ENTITY_RADIUS = 14;
 const CHAR_DISPLAY_H = 56;
 const MOB_DISPLAY_H = 52;
 
+// 敵の種別ごとの見た目（色・大きさ・ボス表示）。server の MOB_KINDS と対応。
+const MOB_STYLE: Record<string, { tint: number; scale: number; label?: string }> = {
+  grunt: { tint: 0x88dd88, scale: 1.0 },
+  swift: { tint: 0x66ccff, scale: 0.85 },
+  tank:  { tint: 0xc8a06a, scale: 1.45 },
+  brute: { tint: 0xe0644a, scale: 1.15 },
+  boss:  { tint: 0xb05ad0, scale: 2.1, label: "災厄の主" },
+};
+
 interface PlayerView {
   container: Phaser.GameObjects.Container;
   shadow: Phaser.GameObjects.Ellipse;
@@ -555,23 +564,22 @@ export class MmoGameScene extends Phaser.Scene {
   // --- モンスター ---
 
   private addMobView(id: string, m: any) {
+    const style = MOB_STYLE[m.kind] ?? MOB_STYLE.grunt;
     const container = this.add.container(m.x, m.y);
     const shadow = this.add.ellipse(0, 0, 22, 7, 0x000000, 0.4);
-    // モンスター画像が読めていればそれを、無ければキャラを緑染めで代用
-    const hasMobTex = this.textures.exists("mob") && this.textures.get("mob").key !== "__MISSING";
-    let sprite: Phaser.GameObjects.Sprite;
-    if (hasMobTex) {
-      sprite = this.add.sprite(0, 0, "mob").setOrigin(0.5, 0.96);
-      const h = sprite.frame.realHeight || MOB_DISPLAY_H;
-      sprite.setScale(MOB_DISPLAY_H / h);
-    } else {
-      sprite = this.add.sprite(0, 0, CHAR_INITIAL_TEX).setOrigin(0.5, 0.96);
-      applyCharPose(sprite, "front", "idle", false, MOB_DISPLAY_H);
-      sprite.setTint(0x66dd66); // 緑染めでモンスター代用
-    }
+    const sprite = this.add.sprite(0, 0, CHAR_INITIAL_TEX).setOrigin(0.5, 0.96);
+    applyCharPose(sprite, "front", "idle", false, MOB_DISPLAY_H);
+    sprite.setTint(style.tint); // 種別ごとの色
     const hpBg = this.add.rectangle(0, -MOB_DISPLAY_H - 6, 30, 4, 0x000000, 0.6);
     const hpFg = this.add.rectangle(-15, -MOB_DISPLAY_H - 6, 30, 4, 0xff7777).setOrigin(0, 0.5);
     container.add([shadow, sprite, hpBg, hpFg]);
+    if (style.label) {
+      const lbl = this.add.text(0, -MOB_DISPLAY_H - 18, style.label, {
+        fontSize: "13px", color: "#e0b3ff", fontStyle: "bold", stroke: "#000", strokeThickness: 3,
+      }).setOrigin(0.5);
+      container.add(lbl);
+    }
+    container.setScale(style.scale); // 種別ごとの大きさ
     this.worldLayer.add(container);
     this.mobs.set(id, { container, shadow, sprite, hpBg, hpFg, dir: "front", flip: false });
     this.updateMobHpBar(id, m);

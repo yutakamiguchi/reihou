@@ -19,13 +19,34 @@ const ATTACK_HALF_WIDTH = 24;   // 進行方向に直交する半幅
 const ATTACK_DURATION_MS = 220;
 const ATTACK_COOLDOWN_MS = 400;
 
-const MOB_TARGET_COUNT = 24;
-const MOB_SPEED = 62;
+const MOB_TARGET_COUNT = 24; // 通常mob（ボス除く）の維持数
 const MOB_AGGRO_RANGE = 260;
+const BOSS_RESPAWN_MS = 45000; // ボス撃破後の再出現待ち
+
+// 敵の種別ごとのパラメータ。speed=px/s、expMul=EXP倍率、drop=霊宝ドロップ率、rareBias=希少寄せ(0-1)
+interface MobKindDef {
+  name: string; maxHp: number; atk: number; speed: number;
+  expMul: number; drop: number; rareBias: number;
+}
+const MOB_KINDS: Record<string, MobKindDef> = {
+  grunt: { name: "迷い霊",   maxHp: 30,  atk: 5,  speed: 62,  expMul: 1.0, drop: 0.45, rareBias: 0 },
+  swift: { name: "疾風鬼",   maxHp: 18,  atk: 4,  speed: 104, expMul: 1.2, drop: 0.45, rareBias: 0 },
+  tank:  { name: "岩石巨人", maxHp: 90,  atk: 8,  speed: 38,  expMul: 2.2, drop: 0.75, rareBias: 0.5 },
+  brute: { name: "紅蓮鬼",   maxHp: 55,  atk: 11, speed: 58,  expMul: 1.8, drop: 0.6,  rareBias: 0.3 },
+  boss:  { name: "災厄の主", maxHp: 280, atk: 16, speed: 48,  expMul: 6.0, drop: 1.0,  rareBias: 1.0 },
+};
+const MOB_SPAWN_WEIGHTS: Array<[string, number]> = [
+  ["grunt", 50], ["swift", 22], ["tank", 16], ["brute", 12],
+];
+function pickMobKind(): string {
+  const total = MOB_SPAWN_WEIGHTS.reduce((s, [, w]) => s + w, 0);
+  let r = Math.random() * total;
+  for (const [k, w] of MOB_SPAWN_WEIGHTS) { r -= w; if (r <= 0) return k; }
+  return "grunt";
+}
 const MOB_TOUCH_RANGE = 28;
 const MOB_TOUCH_DMG_COOLDOWN_MS = 800;
 const PLAYER_RESPAWN_DELAY_MS = 4000;
-const MOB_DROP_CHANCE = 0.5; // mob討伐で霊宝が出る確率（調整可）
 const RELIC_TARGET = 6;            // フィールドに常時湧かせる霊宝ノード数
 const RELIC_PICKUP_RANGE = 30;     // 拾得判定の距離
 const RELIC_SPAWN_COOLDOWN_MS = 4000;
@@ -49,6 +70,7 @@ export class MmoRoom extends Room<MmoState> {
   private mobSeq = 0;
   private relicSeq = 0;
   private lastRelicSpawnAt = 0;
+  private nextBossAt = 0;
   private lastTick = 0;
   // 霊宝の所有を保存する先＝Supabaseのアカウント。sessionId -> profile_id（ゲストは null）
   private profileIds = new Map<string, string | null>();
@@ -60,6 +82,7 @@ export class MmoRoom extends Room<MmoState> {
     this.setState(new MmoState());
 
     for (let i = 0; i < MOB_TARGET_COUNT; i++) this.spawnMob();
+    this.nextBossAt = Date.now() + 20000; // 最初のボスは20秒後から
 
     this.onMessage("input", (client, message: Partial<InputState>) => {
       const input = this.inputs.get(client.sessionId);
@@ -164,18 +187,26 @@ export class MmoRoom extends Room<MmoState> {
     e.y = 80 + Math.random() * (this.state.mapHeight - 160);
   }
 
-  private spawnMob() {
+  private spawnMob(kind: string = pickMobKind()) {
     const id = `mob_${this.mobSeq++}`;
+    const def = MOB_KINDS[kind] ?? MOB_KINDS.grunt;
     const m = new Mob();
     m.id = id;
+    m.kind = kind;
     m.level = 1;
-    m.maxHp = 30; m.hp = 30; m.atk = 5;
+    m.maxHp = def.maxHp; m.hp = def.maxHp; m.atk = def.atk;
     this.placeRandomly(m);
     this.state.mobs.set(id, m);
     this.mobAI.set(id, {
       targetX: m.x, targetY: m.y, retargetAt: 0,
       lastTouchAt: new Map(),
     });
+  }
+
+  private bossAlive(): boolean {
+    let b = false;
+    this.state.mobs.forEach((m) => { if (m.alive && m.kind === "boss") b = true; });
+    return b;
   }
 
   // --- 1tick ---
@@ -223,6 +254,7 @@ export class MmoRoom extends Room<MmoState> {
       if (!m.alive) return;
       const ai = this.mobAI.get(m.id);
       if (!ai) return;
+      const spd = (MOB_KINDS[m.kind] ?? MOB_KINDS.grunt).speed;
 
       // 最近傍の生存プレイヤー
       let nearest: MmoPlayer | null = null;
@@ -238,8 +270,8 @@ export class MmoRoom extends Room<MmoState> {
         const dx = t.x - m.x, dy = t.y - m.y;
         const d = Math.hypot(dx, dy) || 1;
         m.dir = Math.atan2(dy, dx);
-        m.x += (dx / d) * MOB_SPEED * dt;
-        m.y += (dy / d) * MOB_SPEED * dt;
+        m.x += (dx / d) * spd * dt;
+        m.y += (dy / d) * spd * dt;
 
         // 接触ダメージ
         if (nearestD < MOB_TOUCH_RANGE) {
@@ -260,14 +292,15 @@ export class MmoRoom extends Room<MmoState> {
         const dx = ai.targetX - m.x, dy = ai.targetY - m.y;
         const d = Math.hypot(dx, dy) || 1;
         m.dir = Math.atan2(dy, dx);
-        m.x += (dx / d) * MOB_SPEED * 0.6 * dt;
-        m.y += (dy / d) * MOB_SPEED * 0.6 * dt;
+        m.x += (dx / d) * spd * 0.6 * dt;
+        m.y += (dy / d) * spd * 0.6 * dt;
       }
       this.clampToMap(m);
     });
 
-    // mob 補充
+    // 通常mobの補充＋ボスの出現
     if (this.countAliveMobs() < MOB_TARGET_COUNT) this.spawnMob();
+    if (!this.bossAlive() && now >= this.nextBossAt) this.spawnMob("boss");
 
     // 霊宝ノード：拾得判定（サーバー権威）＋補充
     this.state.relics.forEach((r, rid) => {
@@ -308,7 +341,7 @@ export class MmoRoom extends Room<MmoState> {
 
   private countAliveMobs(): number {
     let n = 0;
-    this.state.mobs.forEach((m) => { if (m.alive) n++; });
+    this.state.mobs.forEach((m) => { if (m.alive && m.kind !== "boss") n++; });
     return n;
   }
 
@@ -353,8 +386,9 @@ export class MmoRoom extends Room<MmoState> {
 
   private onMobKilled(attacker: MmoPlayer, mobId: string, mob: Mob) {
     attacker.kills += 1; // 討伐数（表示用・ログイン者は永続）
-    // EXP 付与
-    const gain = 5 + mob.level * 3;
+    const def = MOB_KINDS[mob.kind] ?? MOB_KINDS.grunt;
+    // EXP 付与（種別倍率）
+    const gain = Math.round((5 + mob.level * 3) * def.expMul);
     const oldLevel = attacker.level;
     attacker.exp += gain;
     while (attacker.exp >= attacker.nextExp) {
@@ -369,27 +403,28 @@ export class MmoRoom extends Room<MmoState> {
     // mob 消滅（次tickで補充）
     this.state.mobs.delete(mobId);
     this.mobAI.delete(mobId);
+    if (mob.kind === "boss") this.nextBossAt = Date.now() + BOSS_RESPAWN_MS;
 
-    // 霊宝ドロップ（在庫から払い出し→撃破者の所有へ）
-    this.tryRelicDrop(attacker);
+    // 霊宝ドロップ（種別のドロップ率・レア寄せで在庫から払い出し）
+    this.tryRelicDrop(attacker, def);
   }
 
-  // mob討伐：一定確率で霊宝ドロップ。
-  private tryRelicDrop(attacker: MmoPlayer) {
-    if (Math.random() >= MOB_DROP_CHANCE) return;
-    this.grantRelic(attacker);
+  // mob討伐：種別のドロップ率で霊宝ドロップ（強敵ほど高確率＆レア寄り）。
+  private tryRelicDrop(attacker: MmoPlayer, def: MobKindDef) {
+    if (Math.random() >= def.drop) return;
+    this.grantRelic(attacker, def.rareBias);
   }
 
   // 在庫から霊宝を1枚そのプレイヤーの所有へ払い出し、本人に通知する。
-  // 在庫・保存則の更新は explore_pull_for（service_role）に閉じ込める。
-  private grantRelic(player: MmoPlayer) {
+  // 在庫・保存則の更新は explore_pull_for（service_role）に閉じ込める。rareBias=希少寄せ(0-1)。
+  private grantRelic(player: MmoPlayer, rareBias = 0) {
     const profileId = this.profileIds.get(player.id);
     if (!profileId || !isSupabaseConfigured) return;     // ゲストは払い出し無し
     const client = this.clients.find((c) => c.sessionId === player.id);
     void (async () => {
       try {
         const { data, error } = await supabaseAdmin.rpc("explore_pull_for", {
-          p_profile: profileId, p_season: 1,
+          p_profile: profileId, p_season: 1, p_rare_bias: rareBias,
         });
         if (error) { console.warn("[mmo] 払い出し失敗:", error.message); return; }
         if (data == null) return;                          // 在庫切れ

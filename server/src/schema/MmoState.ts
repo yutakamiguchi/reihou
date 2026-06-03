@@ -26,6 +26,7 @@ export class MmoPlayer extends Schema {
 // モンスター。
 export class Mob extends Schema {
   @type("string") id: string = "";
+  @type("string") kind: string = "grunt"; // grunt/swift/tank/brute/boss（見た目・強さ）
   @type("number") x: number = 0;
   @type("number") y: number = 0;
   @type("number") dir: number = 0;
