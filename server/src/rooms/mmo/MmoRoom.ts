@@ -9,6 +9,25 @@ function nextExpFor(level: number) { return 20 + (level - 1) * 15; }
 function maxHpFor(level: number) { return 100 + (level - 1) * 20; }
 function atkFor(level: number) { return 10 + (level - 1) * 3; }
 
+// 達成課題（満たすと在庫から霊宝授与。legend=true は秘宝を授かる頂点課題＝faucet）
+interface Achv {
+  id: string; type: "kills" | "collected" | "playSec" | "level"; need: number;
+  desc: string; rareBias?: number; legend?: boolean;
+}
+const ACHIEVEMENTS: Achv[] = [
+  { id: "kill10",   type: "kills",     need: 10,   desc: "魔物を10体討伐",   rareBias: 0 },
+  { id: "kill50",   type: "kills",     need: 50,   desc: "魔物を50体討伐",   rareBias: 0.2 },
+  { id: "kill200",  type: "kills",     need: 200,  desc: "魔物を200体討伐",  rareBias: 0.4 },
+  { id: "kill1000", type: "kills",     need: 1000, desc: "魔物を1000体討伐", rareBias: 0.7 },
+  { id: "collect10", type: "collected", need: 10,  desc: "霊宝を10種集める",  rareBias: 0.2 },
+  { id: "collect25", type: "collected", need: 25,  desc: "霊宝を25種集める",  rareBias: 0.4 },
+  { id: "collect35", type: "collected", need: 35,  desc: "霊宝を35種集める",  rareBias: 0.6 },
+  { id: "play1h",   type: "playSec",   need: 3600, desc: "1時間プレイ",       rareBias: 0.2 },
+  { id: "level10",  type: "level",     need: 10,   desc: "レベル10到達",      rareBias: 0.3 },
+  { id: "level20",  type: "level",     need: 20,   desc: "レベル20到達",      rareBias: 0.6 },
+  { id: "apex",     type: "collected", need: 42,   desc: "非秘宝42種を集めし者（秘宝を授かる）", legend: true },
+];
+
 const TICK_RATE = 30;
 const PLAYER_SPEED = 140;
 const ENTITY_RADIUS = 14;
@@ -74,8 +93,11 @@ export class MmoRoom extends Room<MmoState> {
   private lastTick = 0;
   // 霊宝の所有を保存する先＝Supabaseのアカウント。sessionId -> profile_id（ゲストは null）
   private profileIds = new Map<string, string | null>();
-  // プレイ時間の算出用：sessionId -> { 読込時点の累計秒, このセッション開始時刻ms }
-  private statsRt = new Map<string, { basePlaySec: number; sessionStartMs: number }>();
+  // プレイ時間/達成の算出用ランタイム
+  private statsRt = new Map<string, {
+    basePlaySec: number; sessionStartMs: number;
+    claimed: Set<string>; collected: number;
+  }>();
   private lastPersistAt = 0;
 
   onCreate() {
@@ -136,6 +158,7 @@ export class MmoRoom extends Room<MmoState> {
 
     // 保存済みの進行を復元（ログイン者のみ）
     let basePlaySec = 0;
+    let claimed: string[] = [];
     if (profileId && isSupabaseConfigured) {
       const s = await loadGameStats(profileId, SPIRIT_GAME_KEY);
       if (s) {
@@ -149,10 +172,13 @@ export class MmoRoom extends Room<MmoState> {
         }
         p.kills = typeof s.kills === "number" ? s.kills : 0;
         basePlaySec = typeof s.playSec === "number" ? s.playSec : 0;
+        claimed = Array.isArray(s.claimed) ? s.claimed : [];
       }
     }
     p.playSec = Math.floor(basePlaySec);
-    this.statsRt.set(client.sessionId, { basePlaySec, sessionStartMs: Date.now() });
+    this.statsRt.set(client.sessionId, {
+      basePlaySec, sessionStartMs: Date.now(), claimed: new Set(claimed), collected: 0,
+    });
 
     this.placeRandomly(p);
     this.state.players.set(client.sessionId, p);
@@ -160,6 +186,8 @@ export class MmoRoom extends Room<MmoState> {
       up: false, down: false, left: false, right: false,
       attackQueued: false, lastAttackAt: 0,
     });
+    // 蒐集数を取得して達成判定（入場時のバックフィル）
+    if (profileId) void this.refreshCollectedAndEval(p);
   }
 
   onLeave(client: Client) {
@@ -171,13 +199,77 @@ export class MmoRoom extends Room<MmoState> {
     this.statsRt.delete(client.sessionId);
   }
 
-  // ログイン者なら進行（レベル/EXP/討伐数/プレイ時間）を game_stats に保存（fire-and-forget）。
+  // ログイン者なら進行（レベル/EXP/討伐数/プレイ時間/達成）を game_stats に保存（fire-and-forget）。
   private persistStats(p: MmoPlayer) {
     const pid = this.profileIds.get(p.id);
     if (!pid || !isSupabaseConfigured) return;
+    const rt = this.statsRt.get(p.id);
     void saveGameStats(pid, SPIRIT_GAME_KEY, {
       level: p.level, exp: p.exp, kills: p.kills, playSec: p.playSec,
+      claimed: rt ? [...rt.claimed] : [],
     });
+  }
+
+  // 蒐集数(所持種数)を再取得して達成判定（霊宝入手後・入場時に呼ぶ）。
+  private async refreshCollectedAndEval(p: MmoPlayer) {
+    const pid = this.profileIds.get(p.id);
+    const rt = this.statsRt.get(p.id);
+    if (!pid || !rt || !isSupabaseConfigured) return;
+    const { count } = await supabaseAdmin
+      .from("user_cards").select("*", { count: "exact", head: true })
+      .eq("profile_id", pid).gt("count", 0);
+    rt.collected = count ?? 0;
+    this.evalAchievements(p);
+  }
+
+  // 未達成の課題で条件を満たすものを授与する。
+  private evalAchievements(p: MmoPlayer) {
+    const rt = this.statsRt.get(p.id);
+    const pid = this.profileIds.get(p.id);
+    if (!rt || !pid || !isSupabaseConfigured) return;
+    for (const a of ACHIEVEMENTS) {
+      if (rt.claimed.has(a.id)) continue;
+      const cur = a.type === "kills" ? p.kills
+        : a.type === "level" ? p.level
+        : a.type === "playSec" ? p.playSec
+        : rt.collected;
+      if (cur >= a.need) {
+        rt.claimed.add(a.id);          // 先にマーク（多重付与防止）
+        this.persistStats(p);
+        void this.grantAchievementReward(p, a);
+      }
+    }
+  }
+
+  private async grantAchievementReward(p: MmoPlayer, a: Achv) {
+    const pid = this.profileIds.get(p.id);
+    if (!pid) return;
+    const client = this.clients.find((c) => c.sessionId === p.id);
+    try {
+      let cardId: number | null = null;
+      if (a.legend) {
+        cardId = await this.grantAvailableLegend(pid);
+      } else {
+        const { data, error } = await supabaseAdmin.rpc("explore_pull_for", {
+          p_profile: pid, p_season: 1, p_rare_bias: a.rareBias ?? 0,
+        });
+        if (error) { console.warn("[mmo] 達成報酬失敗:", error.message); return; }
+        cardId = (data as number | null) ?? null;
+      }
+      client?.send("achievement", { id: a.id, desc: a.desc, cardId });
+    } catch (e: any) {
+      console.warn("[mmo] 達成報酬例外:", e?.message ?? e);
+    }
+  }
+
+  // 在庫が残る秘宝を1つ授与（頂点課題の faucet）。
+  private async grantAvailableLegend(profileId: string): Promise<number | null> {
+    const { data } = await supabaseAdmin
+      .from("cards").select("id").eq("rarity", "legend").gt("world_reserve", 0).limit(1);
+    if (!data || data.length === 0) return null;
+    const cid = data[0].id as number;
+    await supabaseAdmin.rpc("grant_card", { p_card: cid, p_profile: profileId });
+    return cid;
   }
 
   // --- スポーン ---
@@ -325,10 +417,10 @@ export class MmoRoom extends Room<MmoState> {
       const rt = this.statsRt.get(p.id);
       if (rt) p.playSec = Math.floor(rt.basePlaySec + (now - rt.sessionStartMs) / 1000);
     });
-    // 60秒ごとに全員ぶんを保存（ungraceful切断対策）
+    // 60秒ごとに全員ぶんを保存＋プレイ時間系の達成判定
     if (now - this.lastPersistAt > 60000) {
       this.lastPersistAt = now;
-      this.state.players.forEach((p) => this.persistStats(p));
+      this.state.players.forEach((p) => { this.persistStats(p); this.evalAchievements(p); });
     }
   }
 
@@ -407,6 +499,7 @@ export class MmoRoom extends Room<MmoState> {
 
     // 霊宝ドロップ（種別のドロップ率・レア寄せで在庫から払い出し）
     this.tryRelicDrop(attacker, def);
+    this.evalAchievements(attacker); // 討伐数・レベル系の達成判定
   }
 
   // mob討伐：種別のドロップ率で霊宝ドロップ（強敵ほど高確率＆レア寄り）。
@@ -429,6 +522,7 @@ export class MmoRoom extends Room<MmoState> {
         if (error) { console.warn("[mmo] 払い出し失敗:", error.message); return; }
         if (data == null) return;                          // 在庫切れ
         client?.send("relicFound", { cardId: data as number });
+        void this.refreshCollectedAndEval(player); // 蒐集が増えたかも→達成判定
       } catch (e: any) {
         console.warn("[mmo] 払い出し例外:", e?.message ?? e);
       }

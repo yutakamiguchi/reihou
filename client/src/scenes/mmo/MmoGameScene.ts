@@ -8,6 +8,7 @@ import { sfxHitPlayer, sfxHitNpc, sfxScore, sfxFootstep, sfxRoundStart } from ".
 import { addMoveKeys } from "../../ui/inputKeys";
 import { fetchCards, fetchMyCards, type Card } from "../../spirit";
 import { CARD_ICON, RARITY_META } from "../spirit/cards-meta";
+import { ACHIEVEMENTS } from "../spirit/achievements";
 import { getMyProfile, getUser } from "../../auth";
 
 const PLAYER_SPEED = 140;
@@ -186,6 +187,27 @@ export class MmoGameScene extends Phaser.Scene {
     // 霊宝：カードメタ取得＋ドロップ通知
     void fetchCards().then((cs) => { this.cardById = new Map(cs.map((c) => [c.id, c])); }).catch(() => {});
     this.room.onMessage("relicFound", (m: { cardId: number }) => this.showRelicFound(m.cardId));
+    this.room.onMessage("achievement", (m: { id: string; desc: string; cardId: number | null }) => this.showAchievement(m));
+  }
+
+  // 達成課題クリア時のポップアップ。
+  private showAchievement(m: { desc: string; cardId: number | null }) {
+    const cont = this.add.container(this.scale.width / 2, 230).setScrollFactor(0).setDepth(5200);
+    const bg = this.add.rectangle(0, 0, 360, 88, 0x1a1530, 0.97).setStrokeStyle(3, 0xffd966);
+    const title = this.add.text(0, -22, "🏅 達成！", { fontSize: "18px", color: "#ffd966", fontStyle: "bold" }).setOrigin(0.5);
+    const desc = this.add.text(0, 6, m.desc, { fontSize: "15px", color: "#ece7f5" }).setOrigin(0.5);
+    cont.add([bg, title, desc]);
+    if (m.cardId != null) {
+      const reward = this.add.text(0, 30, `報酬: ${CARD_ICON[m.cardId] ?? "✨"} を入手`, { fontSize: "13px", color: "#9b93b0" }).setOrigin(0.5);
+      cont.add(reward);
+    }
+    cont.setAlpha(0).setScale(0.85);
+    this.tweens.add({ targets: cont, alpha: 1, scale: 1, duration: 260, ease: "Back.easeOut" });
+    sfxRoundStart();
+    this.time.delayedCall(3200, () => {
+      if (!cont.active) return;
+      this.tweens.add({ targets: cont, alpha: 0, y: 210, duration: 320, onComplete: () => cont.destroy() });
+    });
   }
 
   // --- フィールドの霊宝ノード ---
@@ -323,6 +345,21 @@ export class MmoGameScene extends Phaser.Scene {
         `所持総数 ${ownedTotal} 枚（重複 ${dup}）\n\n` +
         `（一覧は B キーの台帳で）`
       ).setLineSpacing(8);
+
+      // 達成課題（左下）。条件を満たすと自動で霊宝が授与される。
+      T(leftX, 440, "▸ 達成課題", 18, "#7ee787", true);
+      ACHIEVEMENTS.forEach((a, i) => {
+        const cur = a.type === "kills" ? (me?.kills ?? 0)
+          : a.type === "level" ? (me?.level ?? 0)
+          : a.type === "playSec" ? (me?.playSec ?? 0)
+          : collected;
+        const done = cur >= a.need;
+        const prog = a.type === "playSec"
+          ? `${Math.floor(cur / 60)}/${Math.floor(a.need / 60)}分`
+          : `${cur}/${a.need}`;
+        T(leftX, 466 + i * 19, `${done ? "✓" : "・"} ${a.desc}  ${done ? "" : prog}`,
+          14, done ? "#7ee787" : "#9b93b0");
+      });
     } catch (e: any) {
       if (this.statusLayer === layer) col.setText(`読み込み失敗: ${e?.message ?? e}`).setColor("#e08a8a");
     }
