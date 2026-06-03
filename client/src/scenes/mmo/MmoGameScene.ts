@@ -60,6 +60,8 @@ export class MmoGameScene extends Phaser.Scene {
   private binderLayer?: Phaser.GameObjects.Container;
   private statusLayer?: Phaser.GameObjects.Container;
   private binderTab: "common" | "rare" | "legend" = "common";
+  private binderSel = 0; // 台帳の選択カーソル（現在タブのリスト内index）
+  private binderCache?: { cards: Card[]; owned: Map<number, number> };
 
   // HUD
   private hpBarBg!: Phaser.GameObjects.Rectangle;
@@ -157,7 +159,17 @@ export class MmoGameScene extends Phaser.Scene {
 
     // --- 入力 ---
     this.keys = addMoveKeys(this);
-    this.keys.SPACE.on("down", () => this.room.send("attack"));
+    this.keys.SPACE.on("down", () => { if (!this.overlayOpen()) this.room.send("attack"); });
+    // 台帳が開いている時は矢印/WASDで選択カーソル移動（移動入力は update 側で抑止）
+    const selKey = (dc: number, dr: number) => { if (this.binderLayer) this.moveBinderSel(dc, dr); };
+    this.input.keyboard!.on("keydown-LEFT", () => selKey(-1, 0));
+    this.input.keyboard!.on("keydown-RIGHT", () => selKey(1, 0));
+    this.input.keyboard!.on("keydown-UP", () => selKey(0, -1));
+    this.input.keyboard!.on("keydown-DOWN", () => selKey(0, 1));
+    this.input.keyboard!.on("keydown-A", () => selKey(-1, 0));
+    this.input.keyboard!.on("keydown-D", () => selKey(1, 0));
+    this.input.keyboard!.on("keydown-W", () => selKey(0, -1));
+    this.input.keyboard!.on("keydown-S", () => selKey(0, 1));
     this.input.keyboard!.on("keydown-ESC", () => {
       if (this.statusLayer) this.closeStatus();
       else if (this.binderLayer) this.closeBinder();
@@ -400,97 +412,134 @@ export class MmoGameScene extends Phaser.Scene {
     this.binderLayer = undefined;
   }
 
-  // キーで台帳のレアリティタブを切替（開いている時だけ有効）。
+  private overlayOpen(): boolean { return !!(this.binderLayer || this.statusLayer); }
+
+  private static readonly BINDER_COLS = 9;
+
+  // キーで台帳のレアリティタブを切替（開いている時だけ有効。再取得せず再描画）。
   private setBinderTab(tab: "common" | "rare" | "legend") {
     if (!this.binderLayer || this.binderTab === tab) return;
     this.binderTab = tab;
-    void this.openBinder();
+    this.binderSel = 0;
+    this.drawBinder();
+  }
+
+  // 矢印/WASDで台帳の選択カーソルを移動（開いている時だけ）。
+  private moveBinderSel(dCol: number, dRow: number) {
+    if (!this.binderLayer || !this.binderCache) return;
+    const list = this.binderCache.cards.filter((c) => c.rarity === this.binderTab);
+    if (list.length === 0) return;
+    let i = this.binderSel + dCol + dRow * MmoGameScene.BINDER_COLS;
+    i = Math.max(0, Math.min(i, list.length - 1));
+    if (i !== this.binderSel) { this.binderSel = i; this.drawBinder(); }
   }
 
   private async openBinder() {
     this.closeStatus(); // 同時には開かない
-    const { width, height } = this.scale;
     this.binderLayer?.destroy();
     const layer = this.add.container(0, 0).setScrollFactor(0).setDepth(7000);
     this.binderLayer = layer;
+    this.binderSel = 0;
+    this.binderCache = undefined;
+    this.drawBinder(); // まず「読み込み中」枠を描く
+    try {
+      const [cards, mine] = await Promise.all([fetchCards(), fetchMyCards()]);
+      if (this.binderLayer !== layer) return; // 閉じられた
+      this.binderCache = { cards, owned: new Map(mine.map((m) => [m.card_id, m.count])) };
+      this.drawBinder();
+    } catch (e: any) {
+      if (this.binderLayer === layer) this.drawBinder(`読み込み失敗: ${e?.message ?? e}`);
+    }
+  }
+
+  // 台帳の中身を（キャッシュから）描き直す。選択中の霊宝は拡大＋ゆっくり反時計回り。
+  private drawBinder(errorMsg?: string) {
+    const layer = this.binderLayer;
+    if (!layer) return;
+    layer.removeAll(true); // 既存の子（と回転tween）を破棄して描き直す
+    const { width, height } = this.scale;
+    const cx = width / 2;
 
     layer.add(this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.85).setInteractive());
-    const cx = width / 2;
     layer.add(this.add.text(cx, 26, "霊宝台帳", { fontSize: "26px", color: "#e8c87e", fontStyle: "bold" }).setOrigin(0.5));
     const info = this.add.text(cx, 58, "読み込み中…", { fontSize: "14px", color: "#9b93b0" }).setOrigin(0.5);
     layer.add(info);
-    const close = this.add.text(width - 30, 24, "✕ 閉じる (B)", { fontSize: "16px", color: "#cccccc" }).setOrigin(1, 0)
-      .setInteractive({ useHandCursor: true });
-    close.on("pointerover", () => close.setColor("#fff"));
-    close.on("pointerout", () => close.setColor("#cccccc"));
-    close.on("pointerdown", () => this.closeBinder());
+    const close = this.add.text(width - 30, 24, "✕ 閉じる (B)", { fontSize: "16px", color: "#cccccc" }).setOrigin(1, 0);
     layer.add(close);
 
-    // レアリティ・タブ（キー 1/2/3 で切替。クリックも可）
     const tabs: Array<{ key: "common" | "rare" | "legend"; label: string; num: string }> = [
       { key: "common", label: "普通", num: "1" }, { key: "rare", label: "希少", num: "2" }, { key: "legend", label: "秘宝", num: "3" },
     ];
     tabs.forEach((t, i) => {
-      const sel = this.binderTab === t.key;
-      const btn = this.add.text(cx - 130 + i * 130, 92, `${t.num}: ${t.label}`, {
+      const on = this.binderTab === t.key;
+      layer.add(this.add.text(cx - 130 + i * 130, 92, `${t.num}: ${t.label}`, {
         fontSize: "18px", fontStyle: "bold",
-        color: sel ? "#15101f" : RARITY_META[t.key].colorStr,
-        backgroundColor: sel ? RARITY_META[t.key].colorStr : "#1c1530",
+        color: on ? "#15101f" : RARITY_META[t.key].colorStr,
+        backgroundColor: on ? RARITY_META[t.key].colorStr : "#1c1530",
         padding: { x: 14, y: 6 } as any,
-      }).setOrigin(0.5).setInteractive({ useHandCursor: true });
-      btn.on("pointerdown", () => this.setBinderTab(t.key));
-      layer.add(btn);
+      }).setOrigin(0.5));
     });
-    layer.add(this.add.text(cx, 120, "1 / 2 / 3 キーで切替　・　B で閉じる", { fontSize: "12px", color: "#6a6285" }).setOrigin(0.5));
+    layer.add(this.add.text(cx, 120, "1/2/3 タブ　・　矢印/WASD 選択　・　B 閉じる", { fontSize: "12px", color: "#6a6285" }).setOrigin(0.5));
 
-    try {
-      const [cards, mine] = await Promise.all([fetchCards(), fetchMyCards()]);
-      if (this.binderLayer !== layer) return; // 閉じられた/再描画された
-      const owned = new Map(mine.map((m) => [m.card_id, m.count]));
-      const rar: Record<string, { have: number; total: number }> = {
-        common: { have: 0, total: 0 }, rare: { have: 0, total: 0 }, legend: { have: 0, total: 0 },
-      };
-      cards.forEach((c) => { rar[c.rarity].total++; if ((owned.get(c.id) ?? 0) > 0) rar[c.rarity].have++; });
-      const collected = rar.common.have + rar.rare.have + rar.legend.have;
-      info.setText(`蒐集 ${collected} / ${cards.length}　・　普通 ${rar.common.have}/${rar.common.total}　希少 ${rar.rare.have}/${rar.rare.total}　秘宝 ${rar.legend.have}/${rar.legend.total}`);
+    if (errorMsg) { info.setText(errorMsg).setColor("#e08a8a"); return; }
+    const cache = this.binderCache;
+    if (!cache) return; // 読み込み中
 
-      const list = cards.filter((c) => c.rarity === this.binderTab);
-      const cols = 9, cellW = 128, cellH = 116, gapX = 6, gapY = 12;
-      const totalW = cols * cellW + (cols - 1) * gapX;
-      const startX = (width - totalW) / 2 + cellW / 2;
-      const startY = 180;
-      list.forEach((c, i) => {
-        const col = i % cols, row = Math.floor(i / cols);
-        const x = startX + col * (cellW + gapX);
-        const y = startY + row * (cellH + gapY);
-        const count = owned.get(c.id) ?? 0;
-        const has = count > 0;
-        const meta = RARITY_META[c.rarity];
-        const bg = this.add.rectangle(x, y, cellW, cellH, 0x1c1530, has ? 0.98 : 0.5).setStrokeStyle(2, has ? meta.colorNum : 0x3a3550);
-        const icon = this.makeRelicIcon(x, y - 22, c.name, c.id, 56, !has);
-        const name = this.add.text(x, y + 26, has ? c.name : "？？？", { fontSize: "13px", color: has ? "#ece7f5" : "#4a4360", align: "center", wordWrap: { width: cellW - 12 } }).setOrigin(0.5);
-        layer.add([bg, icon, name]);
-        if (count > 1) {
-          const badge = this.add.text(x + cellW / 2 - 16, y - cellH / 2 + 11, `×${count}`, {
-            fontSize: "11px", color: "#15101f", fontStyle: "bold", backgroundColor: "#e8b04b", padding: { x: 4, y: 1 } as any,
-          }).setOrigin(0.5);
-          layer.add(badge);
-        }
-      });
-    } catch (e: any) {
-      if (this.binderLayer === layer) info.setText(`読み込み失敗: ${e?.message ?? e}`).setColor("#e08a8a");
-    }
+    const { cards, owned } = cache;
+    const rar: Record<string, { have: number; total: number }> = {
+      common: { have: 0, total: 0 }, rare: { have: 0, total: 0 }, legend: { have: 0, total: 0 },
+    };
+    cards.forEach((c) => { rar[c.rarity].total++; if ((owned.get(c.id) ?? 0) > 0) rar[c.rarity].have++; });
+    const collected = rar.common.have + rar.rare.have + rar.legend.have;
+    info.setText(`蒐集 ${collected} / ${cards.length}　・　普通 ${rar.common.have}/${rar.common.total}　希少 ${rar.rare.have}/${rar.rare.total}　秘宝 ${rar.legend.have}/${rar.legend.total}`);
+
+    const list = cards.filter((c) => c.rarity === this.binderTab);
+    this.binderSel = Math.max(0, Math.min(this.binderSel, list.length - 1));
+    const cols = MmoGameScene.BINDER_COLS, cellW = 128, cellH = 116, gapX = 6, gapY = 12;
+    const totalW = cols * cellW + (cols - 1) * gapX;
+    const startX = (width - totalW) / 2 + cellW / 2;
+    const startY = 180;
+    let selIcon: Phaser.GameObjects.GameObject | null = null;
+    list.forEach((c, i) => {
+      const col = i % cols, row = Math.floor(i / cols);
+      const x = startX + col * (cellW + gapX);
+      const y = startY + row * (cellH + gapY);
+      const count = owned.get(c.id) ?? 0;
+      const has = count > 0;
+      const meta = RARITY_META[c.rarity];
+      const isSel = i === this.binderSel;
+      const bg = this.add.rectangle(x, y, cellW, cellH, isSel ? 0x2a2150 : 0x1c1530, has || isSel ? 0.98 : 0.5)
+        .setStrokeStyle(isSel ? 3 : 2, isSel ? 0xffe066 : (has ? meta.colorNum : 0x3a3550));
+      const name = this.add.text(x, y + 30, has ? c.name : "？？？", { fontSize: "13px", color: has ? "#ece7f5" : "#4a4360", align: "center", wordWrap: { width: cellW - 12 } }).setOrigin(0.5);
+      layer.add([bg, name]);
+      if (isSel) {
+        // 選択中：大きく＋ゆっくり反時計回り
+        selIcon = this.makeRelicIcon(x, y - 8, c.name, c.id, 92, !has);
+        layer.add(selIcon);
+        this.tweens.add({ targets: selIcon, angle: -360, duration: 6000, repeat: -1 });
+        this.tweens.add({ targets: selIcon, scale: { from: (selIcon as any).scale * 0.8, to: (selIcon as any).scale }, duration: 220, ease: "Back.easeOut" });
+      } else {
+        layer.add(this.makeRelicIcon(x, y - 22, c.name, c.id, 56, !has));
+      }
+      if (count > 1) {
+        layer.add(this.add.text(x + cellW / 2 - 16, y - cellH / 2 + 11, `×${count}`, {
+          fontSize: "11px", color: "#15101f", fontStyle: "bold", backgroundColor: "#e8b04b", padding: { x: 4, y: 1 } as any,
+        }).setOrigin(0.5));
+      }
+    });
+    if (selIcon) layer.bringToTop(selIcon); // 拡大アイコンを最前面に
   }
 
   update(_t: number, dtMs: number) {
     const state: any = this.room.state;
     const me: any = state.players.get(this.myId);
 
-    // 入力送信
-    const up = this.keys.W.isDown || this.keys.UP.isDown;
-    const down = this.keys.S.isDown || this.keys.DOWN.isDown;
-    const left = this.keys.A.isDown || this.keys.LEFT.isDown;
-    const right = this.keys.D.isDown || this.keys.RIGHT.isDown;
+    // 入力送信（台帳/ステータスを開いている間は移動しない＝矢印は選択に使う）
+    const ov = this.overlayOpen();
+    const up = !ov && (this.keys.W.isDown || this.keys.UP.isDown);
+    const down = !ov && (this.keys.S.isDown || this.keys.DOWN.isDown);
+    const left = !ov && (this.keys.A.isDown || this.keys.LEFT.isDown);
+    const right = !ov && (this.keys.D.isDown || this.keys.RIGHT.isDown);
     const last = this.lastInputSent;
     if (up !== last.up || down !== last.down || left !== last.left || right !== last.right) {
       this.lastInputSent = { up, down, left, right };
