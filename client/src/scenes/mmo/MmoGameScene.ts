@@ -49,6 +49,7 @@ export class MmoGameScene extends Phaser.Scene {
   private cardById = new Map<number, Card>(); // 霊宝メタ（ドロップ表示用）
   private binderLayer?: Phaser.GameObjects.Container;
   private statusLayer?: Phaser.GameObjects.Container;
+  private binderTab: "common" | "rare" | "legend" = "common";
 
   // HUD
   private hpBarBg!: Phaser.GameObjects.Rectangle;
@@ -332,36 +333,57 @@ export class MmoGameScene extends Phaser.Scene {
   }
 
   private async openBinder() {
+    this.closeStatus(); // 同時には開かない
     const { width, height } = this.scale;
     this.binderLayer?.destroy();
     const layer = this.add.container(0, 0).setScrollFactor(0).setDepth(7000);
     this.binderLayer = layer;
 
-    const backdrop = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.78)
-      .setInteractive(); // 背後クリックを吸収
-    layer.add(backdrop);
-
-    const title = this.add.text(width / 2, 40, "霊宝台帳", { fontSize: "30px", color: "#e8c87e", fontStyle: "bold" }).setOrigin(0.5);
-    const info = this.add.text(width / 2, 74, "読み込み中…", { fontSize: "14px", color: "#9b93b0" }).setOrigin(0.5);
-    const close = this.add.text(width - 30, 30, "✕ 閉じる (B)", { fontSize: "16px", color: "#cccccc" }).setOrigin(1, 0)
+    layer.add(this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.85).setInteractive());
+    const cx = width / 2;
+    layer.add(this.add.text(cx, 26, "霊宝台帳", { fontSize: "26px", color: "#e8c87e", fontStyle: "bold" }).setOrigin(0.5));
+    const info = this.add.text(cx, 58, "読み込み中…", { fontSize: "14px", color: "#9b93b0" }).setOrigin(0.5);
+    layer.add(info);
+    const close = this.add.text(width - 30, 24, "✕ 閉じる (B)", { fontSize: "16px", color: "#cccccc" }).setOrigin(1, 0)
       .setInteractive({ useHandCursor: true });
     close.on("pointerover", () => close.setColor("#fff"));
     close.on("pointerout", () => close.setColor("#cccccc"));
     close.on("pointerdown", () => this.closeBinder());
-    layer.add([title, info, close]);
+    layer.add(close);
+
+    // レアリティ・タブ
+    const tabs: Array<{ key: "common" | "rare" | "legend"; label: string }> = [
+      { key: "common", label: "普通" }, { key: "rare", label: "希少" }, { key: "legend", label: "秘宝" },
+    ];
+    tabs.forEach((t, i) => {
+      const sel = this.binderTab === t.key;
+      const btn = this.add.text(cx - 120 + i * 120, 92, t.label, {
+        fontSize: "18px", fontStyle: "bold",
+        color: sel ? "#15101f" : RARITY_META[t.key].colorStr,
+        backgroundColor: sel ? RARITY_META[t.key].colorStr : "#1c1530",
+        padding: { x: 16, y: 6 } as any,
+      }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+      btn.on("pointerdown", () => { this.binderTab = t.key; void this.openBinder(); });
+      layer.add(btn);
+    });
 
     try {
       const [cards, mine] = await Promise.all([fetchCards(), fetchMyCards()]);
       if (this.binderLayer !== layer) return; // 閉じられた/再描画された
       const owned = new Map(mine.map((m) => [m.card_id, m.count]));
-      const collected = cards.filter((c) => (owned.get(c.id) ?? 0) > 0).length;
-      info.setText(`蒐集 ${collected} / ${cards.length}`);
+      const rar: Record<string, { have: number; total: number }> = {
+        common: { have: 0, total: 0 }, rare: { have: 0, total: 0 }, legend: { have: 0, total: 0 },
+      };
+      cards.forEach((c) => { rar[c.rarity].total++; if ((owned.get(c.id) ?? 0) > 0) rar[c.rarity].have++; });
+      const collected = rar.common.have + rar.rare.have + rar.legend.have;
+      info.setText(`蒐集 ${collected} / ${cards.length}　・　普通 ${rar.common.have}/${rar.common.total}　希少 ${rar.rare.have}/${rar.rare.total}　秘宝 ${rar.legend.have}/${rar.legend.total}`);
 
-      const cols = 8, cellW = 135, cellH = 175, gapX = 8, gapY = 14;
+      const list = cards.filter((c) => c.rarity === this.binderTab);
+      const cols = 9, cellW = 128, cellH = 116, gapX = 6, gapY = 12;
       const totalW = cols * cellW + (cols - 1) * gapX;
       const startX = (width - totalW) / 2 + cellW / 2;
-      const startY = 200;
-      cards.forEach((c, i) => {
+      const startY = 180;
+      list.forEach((c, i) => {
         const col = i % cols, row = Math.floor(i / cols);
         const x = startX + col * (cellW + gapX);
         const y = startY + row * (cellH + gapY);
@@ -369,19 +391,18 @@ export class MmoGameScene extends Phaser.Scene {
         const has = count > 0;
         const meta = RARITY_META[c.rarity];
         const bg = this.add.rectangle(x, y, cellW, cellH, 0x1c1530, has ? 0.98 : 0.5).setStrokeStyle(2, has ? meta.colorNum : 0x3a3550);
-        const icon = this.add.text(x, y - 40, CARD_ICON[c.id] ?? "❔", { fontSize: "40px" }).setOrigin(0.5).setAlpha(has ? 1 : 0.22);
-        const name = this.add.text(x, y + 22, has ? c.name : "？？？", { fontSize: "14px", color: has ? "#ece7f5" : "#4a4360", align: "center", wordWrap: { width: cellW - 16 } }).setOrigin(0.5);
-        const rank = this.add.text(x, y + 56, meta.label, { fontSize: "11px", color: has ? meta.colorStr : "#3a3550" }).setOrigin(0.5);
-        layer.add([bg, icon, name, rank]);
+        const icon = this.add.text(x, y - 26, CARD_ICON[c.id] ?? "❔", { fontSize: "34px" }).setOrigin(0.5).setAlpha(has ? 1 : 0.22);
+        const name = this.add.text(x, y + 26, has ? c.name : "？？？", { fontSize: "13px", color: has ? "#ece7f5" : "#4a4360", align: "center", wordWrap: { width: cellW - 12 } }).setOrigin(0.5);
+        layer.add([bg, icon, name]);
         if (count > 1) {
-          const badge = this.add.text(x + cellW / 2 - 18, y - cellH / 2 + 12, `×${count}`, {
-            fontSize: "12px", color: "#15101f", fontStyle: "bold", backgroundColor: "#e8b04b", padding: { x: 5, y: 1 } as any,
+          const badge = this.add.text(x + cellW / 2 - 16, y - cellH / 2 + 11, `×${count}`, {
+            fontSize: "11px", color: "#15101f", fontStyle: "bold", backgroundColor: "#e8b04b", padding: { x: 4, y: 1 } as any,
           }).setOrigin(0.5);
           layer.add(badge);
         }
       });
     } catch (e: any) {
-      info.setText(`読み込み失敗: ${e?.message ?? e}`).setColor("#e08a8a");
+      if (this.binderLayer === layer) info.setText(`読み込み失敗: ${e?.message ?? e}`).setColor("#e08a8a");
     }
   }
 
