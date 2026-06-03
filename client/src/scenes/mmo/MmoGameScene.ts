@@ -100,10 +100,6 @@ export class MmoGameScene extends Phaser.Scene {
     this.nearGate = null;
     this.traveling = false;
     this.predictReady = false;
-    this.predict = null;
-    this.pending = [];
-    this.predictAccum = 0;
-    this.dirOrder = [];
     this.lastInputSent = { up: false, down: false, left: false, right: false };
     this.binderLayer = undefined;
     this.statusLayer = undefined;
