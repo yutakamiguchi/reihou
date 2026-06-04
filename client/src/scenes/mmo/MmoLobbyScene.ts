@@ -11,7 +11,7 @@ export class MmoLobbyScene extends Phaser.Scene {
       roomName: "mmo",
       gameSceneKey: "MmoGame",
       quickLabel: "[ 世界に入る ]",
-      hint: "操作: WASD/矢印で移動、Space で攻撃 / モンスター討伐・💎拾得で霊宝入手 / B で台帳 / C でステータス",
+      hint: "操作: WASD/矢印で移動、Space で攻撃 / モンスター討伐・💎拾得で霊宝入手 / B 台帳 / C ステータス / M 地図",
       enableCode: false,
       keyboardJoin: true,
       area: "town", // ログイン後はホームタウンへ

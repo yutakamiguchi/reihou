@@ -20,6 +20,16 @@ const ENTITY_RADIUS = 14;
 const CHAR_DISPLAY_H = 56;
 const MOB_DISPLAY_H = 52;
 
+// 世界地図のエリア定義（mx,my は地図パネル内の相対位置 0..1）。エリア追加はここに足すだけ。
+const WORLD_AREAS: Array<{ key: string; name: string; icon: string; mx: number; my: number; blurb: string }> = [
+  { key: "town", name: "ホームタウン", icon: "🏠", mx: 0.26, my: 0.52, blurb: "霊宝を整える安全な拠点。台帳を眺め、次の探索に備える。" },
+  { key: "field", name: "狩場", icon: "⚔️", mx: 0.72, my: 0.40, blurb: "魔物が徘徊する広野。霊宝を求めて踏み入る、危険と発見の地。" },
+];
+// エリア同士の繋がり（双方向）。
+const WORLD_LINKS: Array<[string, string]> = [
+  ["town", "field"],
+];
+
 // 敵の種別ごとの見た目（色・大きさ）。server の MOB_KINDS と対応。
 // 専用イラストは client/public/mobs/<種別>.png を置き、MOB_IMAGE_KINDS に種別を足すと切り替わる。
 const MOB_STYLE: Record<string, { tint: number; scale: number; label?: string }> = {
@@ -80,6 +90,8 @@ export class MmoGameScene extends Phaser.Scene {
   private cardById = new Map<number, Card>(); // 霊宝メタ（ドロップ表示用）
   private binderLayer?: Phaser.GameObjects.Container;
   private statusLayer?: Phaser.GameObjects.Container;
+  private worldmapLayer?: Phaser.GameObjects.Container;
+  private worldmapSel = 0; // 世界地図で選択中の「移動先候補」index
   private binderTab: "common" | "rare" | "legend" = "common";
   private binderSel = 0; // 台帳の選択カーソル（現在タブのリスト内index）
   private binderDetail = false; // 詳細表示中か
@@ -119,6 +131,7 @@ export class MmoGameScene extends Phaser.Scene {
     this.lastInputSent = { up: false, down: false, left: false, right: false };
     this.binderLayer = undefined;
     this.statusLayer = undefined;
+    this.worldmapLayer = undefined;
     this.binderDetail = false;
     this.cardById.clear();
     this.chatInput?.remove();
@@ -284,15 +297,18 @@ export class MmoGameScene extends Phaser.Scene {
       fontSize: "40px", color: "#ff6666", fontStyle: "bold", stroke: "#000", strokeThickness: 5,
     }).setOrigin(0.5).setScrollFactor(0).setDepth(2000).setVisible(false);
 
-    this.add.text(width - 12, height - 10, "B: 台帳　/　C: ステータス　/　ESC: ハブに戻る", {
+    this.add.text(width - 12, height - 10, "B: 台帳　/　C: ステータス　/　M: 地図　/　ESC: ハブに戻る", {
       fontSize: "13px", color: "#aaaaaa",
     }).setOrigin(1, 1).setScrollFactor(0).setDepth(1000);
 
     // --- 入力 ---
     this.keys = addMoveKeys(this);
     this.keys.SPACE.on("down", () => { if (!this.overlayOpen()) this.room.send("attack"); });
-    // 台帳が開いている時は矢印/WASDで選択カーソル移動（移動入力は update 側で抑止）
-    const selKey = (dc: number, dr: number) => { if (this.binderLayer) this.moveBinderSel(dc, dr); };
+    // オーバーレイ表示中は矢印/WASDで選択カーソル移動（移動入力は update 側で抑止）
+    const selKey = (dc: number, dr: number) => {
+      if (this.worldmapLayer) this.moveWorldSel(dc);
+      else if (this.binderLayer) this.moveBinderSel(dc, dr);
+    };
     this.input.keyboard!.on("keydown-LEFT", () => selKey(-1, 0));
     this.input.keyboard!.on("keydown-RIGHT", () => selKey(1, 0));
     this.input.keyboard!.on("keydown-UP", () => selKey(0, -1));
@@ -302,19 +318,23 @@ export class MmoGameScene extends Phaser.Scene {
     this.input.keyboard!.on("keydown-W", () => selKey(0, -1));
     this.input.keyboard!.on("keydown-S", () => selKey(0, 1));
     this.input.keyboard!.on("keydown-ESC", () => {
-      if (this.statusLayer) this.closeStatus();
+      if (this.worldmapLayer) this.closeWorldMap();
+      else if (this.statusLayer) this.closeStatus();
       else if (this.binderLayer && this.binderDetail) { this.binderDetail = false; this.drawBinder(); } // 詳細→一覧
       else if (this.binderLayer) this.closeBinder();
       else this.room.leave();
     });
-    // Enter：台帳一覧→選択中の霊宝の詳細表示（トグル）
     this.input.keyboard!.on("keydown-ENTER", () => {
+      // 世界地図：選択中エリアへ移動
+      if (this.worldmapLayer) { this.travelFromMap(); return; }
+      // 台帳一覧→選択中の霊宝の詳細表示（トグル）
       if (!this.binderLayer || !this.binderCache) return;
       this.binderDetail = !this.binderDetail;
       this.drawBinder();
     });
     this.input.keyboard!.on("keydown-B", () => this.toggleBinder());
     this.input.keyboard!.on("keydown-C", () => this.toggleStatus());
+    this.input.keyboard!.on("keydown-M", () => this.toggleWorldMap());
     // 台帳のタブ切替（クリック不要）：1=普通 / 2=希少 / 3=秘宝
     this.input.keyboard!.on("keydown-ONE", () => this.setBinderTab("common"));
     this.input.keyboard!.on("keydown-TWO", () => this.setBinderTab("rare"));
@@ -446,18 +466,127 @@ export class MmoGameScene extends Phaser.Scene {
 
   private async tryTravel() {
     if (this.traveling || this.overlayOpen() || !this.nearGate) return;
+    void this.travelToArea(this.nearGate.toArea);
+  }
+
+  // 指定エリアへ移動（ゲート / 世界地図 共通）。
+  private async travelToArea(area: string) {
+    if (this.traveling) return;
+    if ((this.room.state as any).area === area) return; // 現在地は無視
     this.traveling = true;
+    this.closeWorldMap();
     const { width, height } = this.scale;
     this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.6).setScrollFactor(0).setDepth(9000);
     this.add.text(width / 2, height / 2, "移動中…", { fontSize: "28px", color: "#ffffff", fontStyle: "bold" }).setOrigin(0.5).setScrollFactor(0).setDepth(9001);
     try {
-      const { room } = await joinPublicRoom("mmo", loadPlayerName(), this.nearGate.toArea);
+      const { room } = await joinPublicRoom("mmo", loadPlayerName(), area);
       await this.room.leave();
       this.scene.start("MmoGame", { room });
     } catch {
       this.traveling = false;
       this.scene.start("MmoLobby");
     }
+  }
+
+  // --- 世界地図（Mキー。エリア相関図＋ファストトラベル）---
+
+  // 現在地から行けるエリアキー一覧（WORLD_LINKS から算出）。
+  private reachableAreas(): string[] {
+    const cur = (this.room.state as any).area;
+    const set = new Set<string>();
+    for (const [a, b] of WORLD_LINKS) {
+      if (a === cur) set.add(b);
+      if (b === cur) set.add(a);
+    }
+    return WORLD_AREAS.filter((ar) => set.has(ar.key)).map((ar) => ar.key);
+  }
+
+  private toggleWorldMap() {
+    if (this.worldmapLayer) this.closeWorldMap();
+    else this.openWorldMap();
+  }
+
+  private closeWorldMap() {
+    this.worldmapLayer?.destroy();
+    this.worldmapLayer = undefined;
+  }
+
+  private moveWorldSel(dir: number) {
+    const reach = this.reachableAreas();
+    if (reach.length === 0) return;
+    this.worldmapSel = (this.worldmapSel + dir + reach.length) % reach.length;
+    this.drawWorldMap();
+  }
+
+  private travelFromMap() {
+    const reach = this.reachableAreas();
+    const target = reach[this.worldmapSel];
+    if (target) void this.travelToArea(target);
+  }
+
+  private openWorldMap() {
+    if (this.overlayOpen()) { this.closeBinder(); this.closeStatus(); }
+    this.worldmapSel = 0;
+    const layer = this.add.container(0, 0).setScrollFactor(0).setDepth(7000);
+    this.worldmapLayer = layer;
+    this.drawWorldMap();
+  }
+
+  private drawWorldMap() {
+    const layer = this.worldmapLayer;
+    if (!layer) return;
+    layer.removeAll(true);
+    const { width, height } = this.scale;
+    const cur = (this.room.state as any).area;
+    const reach = this.reachableAreas();
+    const selKey = reach[this.worldmapSel];
+
+    layer.add(this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.82).setInteractive());
+    layer.add(this.add.text(width / 2, 34, "世界地図", { fontSize: "30px", color: "#e8c87e", fontStyle: "bold" }).setOrigin(0.5));
+
+    // 地図パネル（羊皮紙風）
+    const pw = Math.min(820, width - 80), ph = Math.min(440, height - 200);
+    const px = width / 2 - pw / 2, py = 86;
+    layer.add(this.add.rectangle(width / 2, py + ph / 2, pw, ph, 0x2a2335, 0.96).setStrokeStyle(3, 0x6b5a8f));
+    const pos = (a: { mx: number; my: number }) => ({ x: px + a.mx * pw, y: py + a.my * ph });
+
+    // 繋がり（線）
+    const g = this.add.graphics();
+    g.lineStyle(4, 0x6b5a8f, 0.9);
+    for (const [a, b] of WORLD_LINKS) {
+      const A = WORLD_AREAS.find((w) => w.key === a), B = WORLD_AREAS.find((w) => w.key === b);
+      if (!A || !B) continue;
+      const pa = pos(A), pb = pos(B);
+      g.lineBetween(pa.x, pa.y, pb.x, pb.y);
+    }
+    layer.add(g);
+
+    // エリアノード
+    for (const a of WORLD_AREAS) {
+      const p = pos(a);
+      const isCur = a.key === cur;
+      const isSel = a.key === selKey;
+      const ringColor = isCur ? 0xe8b04b : isSel ? 0x5fd0e0 : 0x8a7fb0;
+      const ring = this.add.circle(p.x, p.y, 34, 0x15101f, 1).setStrokeStyle(isCur || isSel ? 5 : 3, ringColor);
+      layer.add(ring);
+      if (isSel && !isCur) {
+        this.tweens.add({ targets: ring, scale: { from: 1, to: 1.12 }, duration: 600, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
+      }
+      layer.add(this.add.text(p.x, p.y, a.icon, { fontSize: "30px" }).setOrigin(0.5));
+      layer.add(this.add.text(p.x, p.y + 48, a.name, { fontSize: "18px", color: "#ece7f5", fontStyle: "bold" }).setOrigin(0.5));
+      if (isCur) layer.add(this.add.text(p.x, p.y - 50, "現在地", { fontSize: "13px", color: "#e8b04b", fontStyle: "bold" }).setOrigin(0.5));
+    }
+
+    // 下部：選択中エリアの説明＋操作
+    const sel = WORLD_AREAS.find((a) => a.key === selKey);
+    const by = py + ph + 24;
+    if (sel) {
+      layer.add(this.add.text(width / 2, by, `▸ ${sel.name} へ移動`, { fontSize: "20px", color: "#5fd0e0", fontStyle: "bold" }).setOrigin(0.5));
+      layer.add(this.add.text(width / 2, by + 30, sel.blurb, { fontSize: "15px", color: "#cfc7e0", wordWrap: { width: pw - 40 } }).setOrigin(0.5, 0));
+    } else {
+      layer.add(this.add.text(width / 2, by, "ここから行ける場所はまだありません", { fontSize: "16px", color: "#9b93b0" }).setOrigin(0.5));
+    }
+    layer.add(this.add.text(width / 2, height - 24, "← → 選択　・　Enter 移動　・　M / Esc 閉じる", { fontSize: "13px", color: "#6a6285" }).setOrigin(0.5));
   }
 
   // mob討伐などで霊宝を入手したときのポップアップ（画面固定）。
@@ -606,7 +735,7 @@ export class MmoGameScene extends Phaser.Scene {
     this.binderLayer = undefined;
   }
 
-  private overlayOpen(): boolean { return !!(this.binderLayer || this.statusLayer); }
+  private overlayOpen(): boolean { return !!(this.binderLayer || this.statusLayer || this.worldmapLayer); }
 
   // --- チャット（/ で開く）---
 
