@@ -3,7 +3,7 @@
 # - min_machines_running = 0 ＋ auto_stop_machines = "stop" でアイドル時は完全停止＝ほぼ無料
 #   （アクセスが来ると auto_start で自動起動。起動は数秒）
 # - Colyseus は部屋がプロセス内に存在するため、必ず "1台のみ" で運用すること（fly scale count 1）
-app = "unspottable-web-server"
+app = "reihou-server"
 primary_region = "nrt"
 
 [build]
