@@ -71,6 +71,23 @@ function pickMobKind(): string {
   for (const [k, w] of MOB_SPAWN_WEIGHTS) { r -= w; if (r <= 0) return k; }
   return "grunt";
 }
+
+// 狩場（ハント地）の定義。theme は client のタイルマップ/装飾テーマ。
+// roster は弱→強の順。各階は roster の窓(3種)をずらして使う（深い階ほど強い種に）。
+interface GroundDef { id: string; name: string; theme: string; floors: number; roster: string[]; }
+const GROUNDS: Record<string, GroundDef> = {
+  grass: { id: "grass", name: "草原", theme: "grass", floors: 5,
+    roster: ["slime", "grunt", "swift", "spider", "skeleton", "brute", "serpent"] },
+  cave:  { id: "cave",  name: "洞窟", theme: "cave",  floors: 5,
+    roster: ["spider", "grunt", "scorpion", "skeleton", "serpent", "tank", "brute"] },
+};
+// 指定階の出現敵（[種別, 重み]）。窓は roster[f-1 .. f+1] の3種、弱い順に重み大。
+function floorMobWeights(g: GroundDef, floor: number): Array<[string, number]> {
+  const start = Math.max(0, Math.min(floor - 1, g.roster.length - 3));
+  const window = g.roster.slice(start, start + 3);
+  const weights = [5, 3, 2];
+  return window.map((k, i) => [k, weights[i] ?? 1] as [string, number]);
+}
 const MOB_TOUCH_RANGE = 28;
 const MOB_TOUCH_DMG_COOLDOWN_MS = 800;
 const PLAYER_RESPAWN_DELAY_MS = 4000;
@@ -96,6 +113,13 @@ export class MmoRoom extends Room<MmoState> {
   // 静的な当たり判定（AABB: 左上x,y＋幅高さ）。町のみ設定。clientの装飾と座標を一致させる
   private obstacles: Array<{ x: number; y: number; w: number; h: number }> = [];
   private mobAI = new Map<string, MobAI>();
+  // エリア種別（解析済み）。ground="town"以外が狩場。
+  private ground = "town";
+  private floor = 0;
+  private floorMul = 1;        // 階層による敵HP/ATK倍率
+  private floorRareBias = 0;   // 階層によるレア寄せ加算
+  private floorMobs: Array<[string, number]> = [];
+  private hasBoss = false;
   private mobSeq = 0;
   private relicSeq = 0;
   private lastRelicSpawnAt = 0;
@@ -112,15 +136,11 @@ export class MmoRoom extends Room<MmoState> {
 
   onCreate(options: { code?: string; area?: string }) {
     this.setState(new MmoState());
-    const area = options?.area === "town" ? "town" : "field";
-    this.state.area = area;
-    if (area === "town") { this.state.mapWidth = 1280; this.state.mapHeight = 768; } // Tiledマップ(40x24*32)に一致
-    if (area === "town") this.buildTownObstacles();
-    this.setupGates(area);
+    this.applyArea(typeof options?.area === "string" ? options.area : "town");
 
-    if (this.isField()) {
+    if (this.isHunt()) {
       for (let i = 0; i < MOB_TARGET_COUNT; i++) this.spawnMob();
-      this.nextBossAt = Date.now() + 20000; // 最初のボスは20秒後から
+      if (this.hasBoss) this.nextBossAt = Date.now() + 20000; // 最下層：最初のボスは20秒後から
     }
 
     this.onMessage("input", (client, message: Partial<InputState>) => {
@@ -308,14 +328,15 @@ export class MmoRoom extends Room<MmoState> {
     e.y = 80 + Math.random() * (this.state.mapHeight - 160);
   }
 
-  private spawnMob(kind: string = pickMobKind()) {
+  private spawnMob(kind: string = this.pickFloorMob()) {
     const id = `mob_${this.mobSeq++}`;
     const def = MOB_KINDS[kind] ?? MOB_KINDS.grunt;
     const m = new Mob();
     m.id = id;
     m.kind = kind;
-    m.level = 1;
-    m.maxHp = def.maxHp; m.hp = def.maxHp; m.atk = def.atk;
+    m.level = Math.max(1, this.floor); // 階層＝レベル（EXP・表示用）
+    const mul = this.floorMul; // 深い階ほど硬く・痛い
+    m.maxHp = Math.round(def.maxHp * mul); m.hp = m.maxHp; m.atk = Math.round(def.atk * mul);
     this.placeRandomly(m);
     this.state.mobs.set(id, m);
     this.mobAI.set(id, {
@@ -330,9 +351,46 @@ export class MmoRoom extends Room<MmoState> {
     return b;
   }
 
-  private isField(): boolean { return this.state.area === "field"; }
+  private isHunt(): boolean { return this.ground !== "town"; }
 
-  // エリアごとのゲートを配置（近接＋Eで移動）。
+  // エリア文字列を解析して部屋の種別・難易度・マップサイズを設定する。
+  // "town" / "hunt:<ground>:<floor>"（旧 "field" は草原B1にマップ）。
+  private applyArea(areaIn: string) {
+    let area = areaIn === "field" ? "hunt:grass:1" : areaIn;
+    if (area === "town") {
+      this.ground = "town"; this.floor = 0;
+      this.state.area = "town"; this.state.ground = "town";
+      this.state.groundName = "ホームタウン"; this.state.floor = 0;
+      this.state.mapWidth = 1280; this.state.mapHeight = 768; // Tiledマップ(40x24*32)に一致
+      this.buildTownObstacles();
+      this.setupGates();
+      return;
+    }
+    const parts = area.split(":"); // hunt:ground:floor
+    const g = GROUNDS[parts[1]] ?? GROUNDS.grass;
+    const floor = Math.max(1, Math.min(parseInt(parts[2] ?? "1", 10) || 1, g.floors));
+    this.ground = g.id; this.floor = floor;
+    this.floorMul = 1 + 0.18 * (floor - 1);
+    this.floorRareBias = 0.12 * (floor - 1);
+    this.floorMobs = floorMobWeights(g, floor);
+    this.hasBoss = floor === g.floors;
+    this.state.area = `hunt:${g.id}:${floor}`;
+    this.state.ground = g.id;
+    this.state.groundName = g.name;
+    this.state.floor = floor;
+    // 狩場マップは既定サイズ(2560x1440)を使用
+    this.setupGates();
+  }
+
+  // 階層の出現敵テーブルから1種選ぶ。
+  private pickFloorMob(): string {
+    const table = this.floorMobs.length ? this.floorMobs : MOB_SPAWN_WEIGHTS;
+    const total = table.reduce((s, [, w]) => s + w, 0);
+    let r = Math.random() * total;
+    for (const [k, w] of table) { r -= w; if (r <= 0) return k; }
+    return table[0]?.[0] ?? "grunt";
+  }
+
   // 町の当たり判定を構築。clientの buildTownDecor() と (cx, 足元y) を一致させること
   private buildTownObstacles() {
     const box = (x: number, y: number, w: number, h: number) => this.obstacles.push({ x, y, w, h });
@@ -351,11 +409,24 @@ export class MmoRoom extends Room<MmoState> {
     box(470 - 14, 300 - 12, 28, 12);
   }
 
-  private setupGates(area: string) {
-    const g = new Gate();
-    g.y = this.state.mapHeight / 2;
-    if (area === "town") { g.x = this.state.mapWidth - 120; g.toArea = "field"; g.label = "狩場へ"; this.state.gates.set("g", g); }
-    else { g.x = 120; g.toArea = "town"; g.label = "町へ"; this.state.gates.set("g", g); }
+  private setupGates() {
+    const W = this.state.mapWidth, H = this.state.mapHeight;
+    const add = (key: string, x: number, y: number, toArea: string, label: string) => {
+      const g = new Gate(); g.x = x; g.y = y; g.toArea = toArea; g.label = label;
+      this.state.gates.set(key, g);
+    };
+    if (this.ground === "town") {
+      // 町：各狩場のB1へ（右辺に縦に2つ）
+      add("toGrass", W - 120, H * 0.38, "hunt:grass:1", "草原へ");
+      add("toCave", W - 120, H * 0.66, "hunt:cave:1", "洞窟へ");
+      return;
+    }
+    // 狩場：上り階段（左）＝前の階 or 町、下り階段（右）＝次の階（最下層は無し）
+    const gid = this.ground;
+    const def = GROUNDS[gid];
+    if (this.floor > 1) add("up", 120, H / 2, `hunt:${gid}:${this.floor - 1}`, "上り階段");
+    else add("up", 120, H / 2, "town", "町へ");
+    if (def && this.floor < def.floors) add("down", W - 120, H / 2, `hunt:${gid}:${this.floor + 1}`, "下り階段");
   }
 
   // --- 1tick ---
@@ -399,7 +470,7 @@ export class MmoRoom extends Room<MmoState> {
     });
 
     // 狩場のみ：モンスター・霊宝（町は安全＝出ない）
-    if (this.isField()) {
+    if (this.isHunt()) {
     // モンスター
     this.state.mobs.forEach((m) => {
       if (!m.alive) return;
@@ -449,9 +520,9 @@ export class MmoRoom extends Room<MmoState> {
       this.clampToMap(m);
     });
 
-    // 通常mobの補充＋ボスの出現
+    // 通常mobの補充＋ボスの出現（ボスは最下層のみ）
     if (this.countAliveMobs() < MOB_TARGET_COUNT) this.spawnMob();
-    if (!this.bossAlive() && now >= this.nextBossAt) this.spawnMob("boss");
+    if (this.hasBoss && !this.bossAlive() && now >= this.nextBossAt) this.spawnMob("boss");
 
     // 霊宝ノード：拾得判定（サーバー権威）＋補充
     this.state.relics.forEach((r, rid) => {
@@ -588,7 +659,7 @@ export class MmoRoom extends Room<MmoState> {
   // mob討伐：種別のドロップ率で霊宝ドロップ（強敵ほど高確率＆レア寄り）。
   private tryRelicDrop(attacker: MmoPlayer, def: MobKindDef) {
     if (Math.random() >= def.drop) return;
-    this.grantRelic(attacker, def.rareBias);
+    this.grantRelic(attacker, Math.min(1, def.rareBias + this.floorRareBias)); // 深い階ほどレア寄り
   }
 
   // 在庫から霊宝を1枚そのプレイヤーの所有へ払い出し、本人に通知する。

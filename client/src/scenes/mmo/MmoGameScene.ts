@@ -14,20 +14,24 @@ import { getMyProfile, getUser } from "../../auth";
 import { joinPublicRoom } from "../../net";
 import { loadPlayerName } from "../../ui/playerName";
 import { FIELD_DECOR } from "./field-decor";
+import { CAVE_DECOR } from "./cave-decor";
 
 const PLAYER_SPEED = 140;
 const ENTITY_RADIUS = 14;
 const CHAR_DISPLAY_H = 56;
 const MOB_DISPLAY_H = 52;
 
-// 世界地図のエリア定義（mx,my は地図パネル内の相対位置 0..1）。エリア追加はここに足すだけ。
-const WORLD_AREAS: Array<{ key: string; name: string; icon: string; mx: number; my: number; blurb: string }> = [
-  { key: "town", name: "ホームタウン", icon: "🏠", mx: 0.265, my: 0.55, blurb: "霊宝を整える安全な拠点。台帳を眺め、次の探索に備える。" },
-  { key: "field", name: "狩場", icon: "⚔️", mx: 0.71, my: 0.42, blurb: "魔物が徘徊する広野。霊宝を求めて踏み入る、危険と発見の地。" },
+// 世界地図のエリア定義。key=地形ID（state.ground と一致）、travel=移動先エリア文字列。
+// mx,my は地図パネル内の相対位置 0..1（worldmap.png の地点と一致させる）。エリア追加はここに足すだけ。
+const WORLD_AREAS: Array<{ key: string; travel: string; name: string; icon: string; mx: number; my: number; blurb: string }> = [
+  { key: "town", travel: "town", name: "ホームタウン", icon: "🏠", mx: 0.22, my: 0.56, blurb: "霊宝を整える安全な拠点。台帳を眺め、次の探索に備える。" },
+  { key: "grass", travel: "hunt:grass:1", name: "草原", icon: "🌿", mx: 0.54, my: 0.66, blurb: "魔物が徘徊する広野。B1〜B5、深いほど強敵とレアな霊宝が待つ。" },
+  { key: "cave", travel: "hunt:cave:1", name: "洞窟", icon: "🕳️", mx: 0.80, my: 0.30, blurb: "山に穿たれた暗い洞窟。屈強な魔物が巣くう。B1〜B5。" },
 ];
-// エリア同士の繋がり（双方向）。
+// 地形同士の繋がり（双方向）。町をハブに各狩場へ。
 const WORLD_LINKS: Array<[string, string]> = [
-  ["town", "field"],
+  ["town", "grass"],
+  ["town", "cave"],
 ];
 
 // 敵の種別ごとの見た目（色・大きさ）。server の MOB_KINDS と対応。
@@ -160,6 +164,8 @@ export class MmoGameScene extends Phaser.Scene {
     this.load.image("townTiles", "/map/town_tiles.png");
     this.load.tilemapTiledJSON("fieldmap", "/map/field.json");
     this.load.image("fieldTiles", "/map/field_tiles.png");
+    this.load.tilemapTiledJSON("cavemap", "/map/cave.json");
+    this.load.image("caveTiles", "/map/cave_tiles.png");
     this.load.image("worldmap", "/map/worldmap.png"); // 世界地図の地形背景
     // 装飾（建物・木・花・地面など。BaseChip素材から切り出し）
     for (const k of MmoGameScene.DECO_KEYS) {
@@ -220,10 +226,11 @@ export class MmoGameScene extends Phaser.Scene {
     box(470 - 14, 300 - 12, 28, 12);
   }
 
-  // 狩場の装飾（枯れ木・木・岩・草むらを散布）。非衝突＝見た目のみ
-  private buildFieldDecor() {
+  // 狩場の装飾を散布（テーマで内容が変わる）。非衝突＝見た目のみ
+  private buildHuntDecor(ground: string) {
     if (!this.textures.exists("deco:tree_dead")) return;
-    for (const [k, cx, fy] of FIELD_DECOR) {
+    const decor = ground === "cave" ? CAVE_DECOR : FIELD_DECOR;
+    for (const [k, cx, fy] of decor) {
       if (!this.textures.exists(`deco:${k}`)) continue;
       const im = this.add.image(cx, fy, `deco:${k}`).setOrigin(0.5, 1).setDepth(fy);
       this.worldLayer.add(im);
@@ -249,20 +256,24 @@ export class MmoGameScene extends Phaser.Scene {
     ensureCharAnims(this);
     const state: any = this.room.state;
     const mapW = state.mapWidth, mapH = state.mapHeight;
-    const isTown = state.area === "town";
+    const ground: string = state.ground || (state.area === "town" ? "town" : "grass");
+    const isTown = ground === "town";
 
-    // --- 背景（Tiled製タイルマップ：町=草地、狩場=ワイルド草地） ---
-    if (isTown && this.cache.tilemap.has("townmap")) {
-      const tmap = this.make.tilemap({ key: "townmap" });
-      const ts = tmap.addTilesetImage("grass", "townTiles");
-      if (ts) tmap.createLayer("ground", ts, 0, 0)?.setDepth(-100);
-    } else if (!isTown && this.cache.tilemap.has("fieldmap")) {
-      const tmap = this.make.tilemap({ key: "fieldmap" });
-      const ts = tmap.addTilesetImage("fieldgrass", "fieldTiles");
+    // --- 背景（Tiled製タイルマップ：町=草地 / 草原=ワイルド草地 / 洞窟=暗い石床） ---
+    // テーマ → [tilemapキー, tilesetキー, tileset名]
+    const THEME: Record<string, [string, string, string]> = {
+      town: ["townmap", "townTiles", "grass"],
+      grass: ["fieldmap", "fieldTiles", "fieldgrass"],
+      cave: ["cavemap", "caveTiles", "cavefloor"],
+    };
+    const tm = THEME[ground] ?? THEME.grass;
+    if (this.cache.tilemap.has(tm[0])) {
+      const tmap = this.make.tilemap({ key: tm[0] });
+      const ts = tmap.addTilesetImage(tm[2], tm[1]);
       if (ts) tmap.createLayer("ground", ts, 0, 0)?.setDepth(-100);
     } else {
       // フォールバック：ベタ塗り＋グリッド＋外周
-      this.add.rectangle(mapW / 2, mapH / 2, mapW, mapH, isTown ? 0x6b5a3f : 0x3a6b3f).setDepth(-100);
+      this.add.rectangle(mapW / 2, mapH / 2, mapW, mapH, isTown ? 0x6b5a3f : ground === "cave" ? 0x2c2a36 : 0x3a6b3f).setDepth(-100);
       const grid = this.add.graphics().setDepth(-99);
       grid.lineStyle(2, 0x000000, 0.08);
       for (let x = 0; x <= mapW; x += 128) grid.lineBetween(x, 0, x, mapH);
@@ -274,7 +285,7 @@ export class MmoGameScene extends Phaser.Scene {
 
     // エリアごとの装飾を配置
     if (isTown) this.buildTownDecor();
-    else this.buildFieldDecor();
+    else this.buildHuntDecor(ground);
 
     // --- カメラ ---
     this.cameras.main.setBounds(0, 0, mapW, mapH);
@@ -345,9 +356,13 @@ export class MmoGameScene extends Phaser.Scene {
     this.input.keyboard!.on("keydown-THREE", () => this.setBinderTab("legend"));
     this.input.keyboard!.on("keydown-E", () => this.tryTravel()); // ゲートで移動
 
-    // エリア名＋移動プロンプト（画面固定）
-    this.add.text(width / 2, 16, isTown ? "ホームタウン" : "狩場", {
-      fontSize: "20px", color: isTown ? "#ffd9a0" : "#a0ffb0", fontStyle: "bold", stroke: "#000", strokeThickness: 4,
+    // エリア名＋移動プロンプト（画面固定）。狩場は「草原 B2」のように階層も表示
+    const areaTitle = isTown
+      ? (state.groundName || "ホームタウン")
+      : `${state.groundName || "狩場"}　B${state.floor || 1}`;
+    this.add.text(width / 2, 16, areaTitle, {
+      fontSize: "20px", color: isTown ? "#ffd9a0" : ground === "cave" ? "#c9b6ff" : "#a0ffb0",
+      fontStyle: "bold", stroke: "#000", strokeThickness: 4,
     }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(1000);
     this.gatePrompt = this.add.text(width / 2, height - 70, "", {
       fontSize: "18px", color: "#ffe066", fontStyle: "bold", stroke: "#000", strokeThickness: 4,
@@ -494,9 +509,9 @@ export class MmoGameScene extends Phaser.Scene {
 
   // --- 世界地図（Mキー。エリア相関図＋ファストトラベル）---
 
-  // 現在地から行けるエリアキー一覧（WORLD_LINKS から算出）。
+  // 現在の地形から行ける地形key一覧（WORLD_LINKS から算出）。
   private reachableAreas(): string[] {
-    const cur = (this.room.state as any).area;
+    const cur = (this.room.state as any).ground || "town";
     const set = new Set<string>();
     for (const [a, b] of WORLD_LINKS) {
       if (a === cur) set.add(b);
@@ -524,8 +539,9 @@ export class MmoGameScene extends Phaser.Scene {
 
   private travelFromMap() {
     const reach = this.reachableAreas();
-    const target = reach[this.worldmapSel];
-    if (target) void this.travelToArea(target);
+    const key = reach[this.worldmapSel];
+    const node = WORLD_AREAS.find((a) => a.key === key);
+    if (node) void this.travelToArea(node.travel);
   }
 
   private openWorldMap() {
@@ -541,7 +557,7 @@ export class MmoGameScene extends Phaser.Scene {
     if (!layer) return;
     layer.removeAll(true);
     const { width, height } = this.scale;
-    const cur = (this.room.state as any).area;
+    const cur = (this.room.state as any).ground || "town";
     const reach = this.reachableAreas();
     const selKey = reach[this.worldmapSel];
 

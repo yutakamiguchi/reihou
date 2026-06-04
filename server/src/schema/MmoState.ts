@@ -58,7 +58,10 @@ export class MmoState extends Schema {
   @type({ map: Mob }) mobs = new MapSchema<Mob>();
   @type({ map: Relic }) relics = new MapSchema<Relic>();
   @type({ map: Gate }) gates = new MapSchema<Gate>();
-  @type("string") area: string = "field"; // town(安全) / field(狩場)
+  @type("string") area: string = "town"; // "town" / "hunt:<ground>:<floor>"
+  @type("string") ground: string = "town"; // テーマ用ID: town / grass / cave
+  @type("string") groundName: string = "ホームタウン"; // 表示名
+  @type("number") floor: number = 0; // 階層（0=町）
   @type("string") phase: string = "world"; // 固定（waitForInitialState 通過用）
   @type("number") mapWidth: number = 2560;
   @type("number") mapHeight: number = 1440;
