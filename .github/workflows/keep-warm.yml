@@ -6,7 +6,9 @@ name: keep-warm
 
 on:
   schedule:
-    - cron: "*/10 * * * *" # 10分ごと（GitHubの都合で多少遅延することがある）
+    # 5分ごと。GitHubのcronは混雑時に遅延/間引きされるため、間隔を詰めて
+    # 「15分アイドル」前に最低1回当たる確率を上げる（公開リポジトリなので無料）。
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}      # 手動実行も可
 
 jobs:
