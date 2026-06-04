@@ -1,3 +1,8 @@
+# Fly.io 設定（東京リージョン・ゼロスケール運用）
+# - primary_region = "nrt"（東京）で操作ラグを最小化
+# - min_machines_running = 0 ＋ auto_stop_machines = "stop" でアイドル時は完全停止＝ほぼ無料
+#   （アクセスが来ると auto_start で自動起動。起動は数秒）
+# - Colyseus は部屋がプロセス内に存在するため、必ず "1台のみ" で運用すること（fly scale count 1）
 app = "unspottable-web-server"
 primary_region = "nrt"
 
@@ -7,9 +12,17 @@ primary_region = "nrt"
 [http_service]
   internal_port = 2567
   force_https = true
-  auto_stop_machines = "suspend"
-  auto_start_machines = true
-  min_machines_running = 0
+  auto_stop_machines = "stop"   # アイドルで完全停止（コスト最小）。即時復帰を優先するなら "suspend"
+  auto_start_machines = true     # アクセスで自動起動
+  min_machines_running = 0       # 誰も居なければ0台＝ほぼ無料
+
+  # 起動完了(=接続受付OK)を Fly に知らせるヘルスチェック
+  [[http_service.checks]]
+    method = "GET"
+    path = "/health"
+    interval = "15s"
+    timeout = "4s"
+    grace_period = "10s"
 
 [[vm]]
   size = "shared-cpu-1x"
