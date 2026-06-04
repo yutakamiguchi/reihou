@@ -20,7 +20,7 @@ const PLAYER_SPEED = 140;
 const ENTITY_RADIUS = 14;
 const CHAR_DISPLAY_H = 56;
 const MOB_DISPLAY_H = 52;
-const MMO_ZOOM = 1.95; // 狩場/町カメラのズーム（>1で寄る）。内部解像度1920に合わせ、見える範囲は従来と同等。HUDはUI専用カメラなので影響を受けない
+const MMO_VIEW_W = 985; // カメラに映す「ワールドの横幅(px)」。解像度に依らず見える範囲を一定にするための基準
 
 // 世界地図のエリア定義。key=地形ID（state.ground と一致）、travel=移動先エリア文字列。
 // mx,my は地図パネル内の相対位置 0..1（worldmap.png の地点と一致させる）。エリア追加はここに足すだけ。
@@ -299,7 +299,7 @@ export class MmoGameScene extends Phaser.Scene {
     // --- カメラ（main=ワールドをズーム＆追従 / uiCam=UIを等倍） ---
     this.cameras.main.setBounds(0, 0, mapW, mapH);
     this.cameras.main.setBackgroundColor(0x223024);
-    this.cameras.main.setZoom(MMO_ZOOM);
+    this.cameras.main.setZoom(this.scale.width / MMO_VIEW_W); // 解像度に依らず見える範囲を一定に
     this.cameras.main.ignore(this.uiLayer); // ワールドカメラはUIを描かない
     this.uiCam = this.cameras.add(0, 0, this.scale.width, this.scale.height);
     this.uiCam.ignore(this.worldLayer);      // UIカメラはワールドを描かない
