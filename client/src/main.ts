@@ -26,5 +26,8 @@ new Phaser.Game({
     BombermanLobbyScene, BombermanGameScene,
     MmoLobbyScene, MmoGameScene,
   ],
-  pixelArt: true,
+  // イラスト主体＆半端なズーム/FIT拡大のため、最近傍(pixelArt)ではなく
+  // スムージング(アンチエイリアス)で拡大 → 画素の荒れを防ぐ
+  antialias: true,
+  roundPixels: false,
 });
