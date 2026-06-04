@@ -135,6 +135,9 @@ export class MmoGameScene extends Phaser.Scene {
     for (const kind of MOB_IMAGE_KINDS) {
       this.load.image(mobTexKey(kind), `/mobs/${kind}.png`);
     }
+    // ホームタウンのタイルマップ（Tiled製）
+    this.load.tilemapTiledJSON("townmap", "/map/town.json");
+    this.load.image("townTiles", "/map/town_tiles.png");
   }
 
   // 霊宝のアイコン：イラストがあればスプライト、無ければ絵文字。boxPx 内に収める。
@@ -158,14 +161,21 @@ export class MmoGameScene extends Phaser.Scene {
     const mapW = state.mapWidth, mapH = state.mapHeight;
     const isTown = state.area === "town";
 
-    // --- 背景（エリアで色を変える：町=暖色 / 狩場=緑） ---
-    this.add.rectangle(mapW / 2, mapH / 2, mapW, mapH, isTown ? 0x6b5a3f : 0x3a6b3f);
-    const grid = this.add.graphics();
-    grid.lineStyle(2, 0x000000, 0.08);
-    for (let x = 0; x <= mapW; x += 128) grid.lineBetween(x, 0, x, mapH);
-    for (let y = 0; y <= mapH; y += 128) grid.lineBetween(0, y, mapW, y);
-    // 外周フェンス
-    this.add.rectangle(mapW / 2, mapH / 2, mapW, mapH, 0, 0).setStrokeStyle(8, 0x2a3a2c);
+    // --- 背景 ---
+    if (isTown && this.cache.tilemap.has("townmap")) {
+      // ホームタウン：Tiled製タイルマップを敷く
+      const tmap = this.make.tilemap({ key: "townmap" });
+      const ts = tmap.addTilesetImage("grass", "townTiles");
+      if (ts) tmap.createLayer("ground", ts, 0, 0)?.setDepth(-100);
+    } else {
+      // 狩場など：ベタ塗り＋グリッド＋外周
+      this.add.rectangle(mapW / 2, mapH / 2, mapW, mapH, isTown ? 0x6b5a3f : 0x3a6b3f).setDepth(-100);
+      const grid = this.add.graphics().setDepth(-99);
+      grid.lineStyle(2, 0x000000, 0.08);
+      for (let x = 0; x <= mapW; x += 128) grid.lineBetween(x, 0, x, mapH);
+      for (let y = 0; y <= mapH; y += 128) grid.lineBetween(0, y, mapW, y);
+      this.add.rectangle(mapW / 2, mapH / 2, mapW, mapH, 0, 0).setStrokeStyle(8, 0x2a3a2c).setDepth(-98);
+    }
 
     this.worldLayer = this.add.layer();
 

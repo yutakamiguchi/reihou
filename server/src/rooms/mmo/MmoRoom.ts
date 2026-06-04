@@ -112,7 +112,7 @@ export class MmoRoom extends Room<MmoState> {
     this.setState(new MmoState());
     const area = options?.area === "town" ? "town" : "field";
     this.state.area = area;
-    if (area === "town") { this.state.mapWidth = 1600; this.state.mapHeight = 900; }
+    if (area === "town") { this.state.mapWidth = 1280; this.state.mapHeight = 768; } // Tiledマップ(40x24*32)に一致
     this.setupGates(area);
 
     if (this.isField()) {
