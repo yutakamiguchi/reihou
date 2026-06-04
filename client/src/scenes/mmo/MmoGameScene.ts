@@ -13,6 +13,7 @@ import { ACHIEVEMENTS } from "../spirit/achievements";
 import { getMyProfile, getUser } from "../../auth";
 import { joinPublicRoom } from "../../net";
 import { loadPlayerName } from "../../ui/playerName";
+import { FIELD_DECOR } from "./field-decor";
 
 const PLAYER_SPEED = 140;
 const ENTITY_RADIUS = 14;
@@ -138,20 +139,22 @@ export class MmoGameScene extends Phaser.Scene {
     for (const kind of MOB_IMAGE_KINDS) {
       this.load.image(mobTexKey(kind), `/mobs/${kind}.png`);
     }
-    // ホームタウンのタイルマップ（Tiled製）
+    // タイルマップ（Tiled製：ホームタウン＝町、field＝狩場）
     this.load.tilemapTiledJSON("townmap", "/map/town.json");
     this.load.image("townTiles", "/map/town_tiles.png");
-    // 町の装飾（建物・木・花・地面など。BaseChip素材から切り出し）
+    this.load.tilemapTiledJSON("fieldmap", "/map/field.json");
+    this.load.image("fieldTiles", "/map/field_tiles.png");
+    // 装飾（建物・木・花・地面など。BaseChip素材から切り出し）
     for (const k of MmoGameScene.DECO_KEYS) {
       this.load.image(`deco:${k}`, `/map/deco/${k}.png`);
     }
   }
 
-  // 町に置く装飾テクスチャ（/map/deco/<key>.png）
+  // 装飾テクスチャ（/map/deco/<key>.png）
   private static readonly DECO_KEYS = [
     "house_brick", "house_wood", "house_tan",
-    "tree_green", "tree_green2", "tree_autumn",
-    "bush", "bush2", "rock", "rock2",
+    "tree_green", "tree_green2", "tree_autumn", "tree_dead",
+    "bush", "bush2", "rock", "rock2", "grass_tuft", "longgrass",
     "flower_white", "flower_pink", "flower_blue", "sunflower",
     "well", "signpost", "scarecrow", "corn", "pumpkin", "cabbage",
     "path_cobble", "path_dirt",
@@ -200,6 +203,16 @@ export class MmoGameScene extends Phaser.Scene {
     box(470 - 14, 300 - 12, 28, 12);
   }
 
+  // 狩場の装飾（枯れ木・木・岩・草むらを散布）。非衝突＝見た目のみ
+  private buildFieldDecor() {
+    if (!this.textures.exists("deco:tree_dead")) return;
+    for (const [k, cx, fy] of FIELD_DECOR) {
+      if (!this.textures.exists(`deco:${k}`)) continue;
+      const im = this.add.image(cx, fy, `deco:${k}`).setOrigin(0.5, 1).setDepth(fy);
+      this.worldLayer.add(im);
+    }
+  }
+
   // 霊宝のアイコン：イラストがあればスプライト、無ければ絵文字。boxPx 内に収める。
   private makeRelicIcon(x: number, y: number, name: string, cardId: number, boxPx: number, dim: boolean): Phaser.GameObjects.GameObject {
     const key = relicTexKey(name);
@@ -221,14 +234,17 @@ export class MmoGameScene extends Phaser.Scene {
     const mapW = state.mapWidth, mapH = state.mapHeight;
     const isTown = state.area === "town";
 
-    // --- 背景 ---
+    // --- 背景（Tiled製タイルマップ：町=草地、狩場=ワイルド草地） ---
     if (isTown && this.cache.tilemap.has("townmap")) {
-      // ホームタウン：Tiled製タイルマップを敷く
       const tmap = this.make.tilemap({ key: "townmap" });
       const ts = tmap.addTilesetImage("grass", "townTiles");
       if (ts) tmap.createLayer("ground", ts, 0, 0)?.setDepth(-100);
+    } else if (!isTown && this.cache.tilemap.has("fieldmap")) {
+      const tmap = this.make.tilemap({ key: "fieldmap" });
+      const ts = tmap.addTilesetImage("fieldgrass", "fieldTiles");
+      if (ts) tmap.createLayer("ground", ts, 0, 0)?.setDepth(-100);
     } else {
-      // 狩場など：ベタ塗り＋グリッド＋外周
+      // フォールバック：ベタ塗り＋グリッド＋外周
       this.add.rectangle(mapW / 2, mapH / 2, mapW, mapH, isTown ? 0x6b5a3f : 0x3a6b3f).setDepth(-100);
       const grid = this.add.graphics().setDepth(-99);
       grid.lineStyle(2, 0x000000, 0.08);
@@ -239,8 +255,9 @@ export class MmoGameScene extends Phaser.Scene {
 
     this.worldLayer = this.add.layer();
 
-    // 町なら装飾（広場・道・建物・畑・木々）を配置
+    // エリアごとの装飾を配置
     if (isTown) this.buildTownDecor();
+    else this.buildFieldDecor();
 
     // --- カメラ ---
     this.cameras.main.setBounds(0, 0, mapW, mapH);
