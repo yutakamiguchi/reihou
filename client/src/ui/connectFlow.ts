@@ -19,7 +19,7 @@ export async function tryJoin(
     const warmTimer = setTimeout(() => { warmedQuickly = false; }, 2500);
     await warmUp((sec) => {
       if (!warmedQuickly) {
-        status.setText(`サーバー起動中... (${Math.floor(sec)}秒 / 最大90秒)`);
+        status.setText(`サーバー起動中…(${Math.floor(sec)}秒)　無料サーバーのため初回は最大2分ほどかかります`);
       }
     });
     clearTimeout(warmTimer);

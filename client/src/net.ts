@@ -20,8 +20,10 @@ async function authToken(): Promise<string | undefined> {
 
 /**
  * 無料ホスティングのコールドスタート対策。
- * /health に200が返るまで /または最大90秒/ 待つ。
+ * /health に200が返るまで /または最大180秒/ 待つ。
+ * Render無料プランの復帰は60〜120秒かかることがあるため上限は余裕を持たせる。
  */
+const WARMUP_MAX_SEC = 180;
 export async function warmUp(onProgress?: (sec: number) => void): Promise<void> {
   const httpUrl = SERVER_URL.replace(/^ws/, "http") + "/health";
   const startedAt = Date.now();
@@ -29,15 +31,16 @@ export async function warmUp(onProgress?: (sec: number) => void): Promise<void> 
   while (true) {
     attempt++;
     try {
+      // 1リクエストを長めに保持（Renderは起動完了まで接続を保持して応答することがある）
       const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 5000);
+      const t = setTimeout(() => ctrl.abort(), 30000);
       const res = await fetch(httpUrl, { signal: ctrl.signal });
       clearTimeout(t);
       if (res.ok) return;
     } catch { /* リトライ */ }
     const elapsed = (Date.now() - startedAt) / 1000;
     onProgress?.(elapsed);
-    if (elapsed > 90) throw new Error("サーバーの起動に失敗しました");
+    if (elapsed > WARMUP_MAX_SEC) throw new Error("サーバーの起動に時間がかかっています。少し待って再度お試しください");
     await new Promise(r => setTimeout(r, attempt < 3 ? 1000 : 2000));
   }
 }
