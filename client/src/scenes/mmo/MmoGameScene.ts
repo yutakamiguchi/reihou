@@ -20,6 +20,7 @@ const PLAYER_SPEED = 140;
 const ENTITY_RADIUS = 14;
 const CHAR_DISPLAY_H = 56;
 const MOB_DISPLAY_H = 52;
+const MMO_ZOOM = 1.3; // 狩場/町カメラのズーム（>1で寄る）。HUDはUI専用カメラなので影響を受けない
 
 // 世界地図のエリア定義。key=地形ID（state.ground と一致）、travel=移動先エリア文字列。
 // mx,my は地図パネル内の相対位置 0..1（worldmap.png の地点と一致させる）。エリア追加はここに足すだけ。
@@ -91,6 +92,8 @@ export class MmoGameScene extends Phaser.Scene {
   private chatLog!: Phaser.GameObjects.Text;
   private chatLines: string[] = [];
   private worldLayer!: Phaser.GameObjects.Layer;
+  private uiLayer!: Phaser.GameObjects.Layer; // 画面固定UI（ズーム非対象・uiCamで描画）
+  private uiCam!: Phaser.Cameras.Scene2D.Camera;
   // 当たり判定（サーバーと一致させる）。予測移動でのめり込み防止に使う
   private obstacles: Array<{ x: number; y: number; w: number; h: number }> = [];
   private predictReady = false;
@@ -259,7 +262,10 @@ export class MmoGameScene extends Phaser.Scene {
     const ground: string = state.ground || (state.area === "town" ? "town" : "grass");
     const isTown = ground === "town";
 
-    // --- 背景（Tiled製タイルマップ：町=草地 / 草原=ワイルド草地 / 洞窟=暗い石床） ---
+    // ワールド層（カメラはこの層をズーム＆追従。UI層とは別カメラで描画）
+    this.worldLayer = this.add.layer();
+
+    // --- 背景（Tiled製タイルマップ：町=草地 / 草原=ワイルド草地 / 洞窟=暗い石床）→ worldLayer ---
     // テーマ → [tilemapキー, tilesetキー, tileset名]
     const THEME: Record<string, [string, string, string]> = {
       town: ["townmap", "townTiles", "grass"],
@@ -270,29 +276,36 @@ export class MmoGameScene extends Phaser.Scene {
     if (this.cache.tilemap.has(tm[0])) {
       const tmap = this.make.tilemap({ key: tm[0] });
       const ts = tmap.addTilesetImage(tm[2], tm[1]);
-      if (ts) tmap.createLayer("ground", ts, 0, 0)?.setDepth(-100);
+      const layer = ts ? tmap.createLayer("ground", ts, 0, 0) : null;
+      if (layer) { layer.setDepth(-100); this.worldLayer.add(layer); }
     } else {
       // フォールバック：ベタ塗り＋グリッド＋外周
-      this.add.rectangle(mapW / 2, mapH / 2, mapW, mapH, isTown ? 0x6b5a3f : ground === "cave" ? 0x2c2a36 : 0x3a6b3f).setDepth(-100);
+      const bg = this.add.rectangle(mapW / 2, mapH / 2, mapW, mapH, isTown ? 0x6b5a3f : ground === "cave" ? 0x2c2a36 : 0x3a6b3f).setDepth(-100);
       const grid = this.add.graphics().setDepth(-99);
       grid.lineStyle(2, 0x000000, 0.08);
       for (let x = 0; x <= mapW; x += 128) grid.lineBetween(x, 0, x, mapH);
       for (let y = 0; y <= mapH; y += 128) grid.lineBetween(0, y, mapW, y);
-      this.add.rectangle(mapW / 2, mapH / 2, mapW, mapH, 0, 0).setStrokeStyle(8, 0x2a3a2c).setDepth(-98);
+      const fence = this.add.rectangle(mapW / 2, mapH / 2, mapW, mapH, 0, 0).setStrokeStyle(8, 0x2a3a2c).setDepth(-98);
+      this.worldLayer.add([bg, grid, fence]);
     }
 
-    this.worldLayer = this.add.layer();
-
-    // エリアごとの装飾を配置
+    // エリアごとの装飾を配置（buildXxxDecor 内で worldLayer に追加される）
     if (isTown) this.buildTownDecor();
     else this.buildHuntDecor(ground);
 
-    // --- カメラ ---
+    // UI層（画面固定。ズーム非対象＝専用カメラで等倍描画）
+    this.uiLayer = this.add.layer();
+
+    // --- カメラ（main=ワールドをズーム＆追従 / uiCam=UIを等倍） ---
     this.cameras.main.setBounds(0, 0, mapW, mapH);
     this.cameras.main.setBackgroundColor(0x223024);
+    this.cameras.main.setZoom(MMO_ZOOM);
+    this.cameras.main.ignore(this.uiLayer); // ワールドカメラはUIを描かない
+    this.uiCam = this.cameras.add(0, 0, this.scale.width, this.scale.height);
+    this.uiCam.ignore(this.worldLayer);      // UIカメラはワールドを描かない
 
-    // --- HUD（画面固定） ---
-    this.add.rectangle(12, 12, 240, 78, 0x000000, 0.5)
+    // --- HUD（画面固定・UI層） ---
+    const hudBg = this.add.rectangle(12, 12, 240, 78, 0x000000, 0.5)
       .setOrigin(0, 0).setStrokeStyle(2, 0x666666).setScrollFactor(0).setDepth(1000);
     this.hudText = this.add.text(20, 18, "", {
       fontSize: "15px", color: "#ffffff", fontStyle: "bold",
@@ -312,9 +325,10 @@ export class MmoGameScene extends Phaser.Scene {
       fontSize: "40px", color: "#ff6666", fontStyle: "bold", stroke: "#000", strokeThickness: 5,
     }).setOrigin(0.5).setScrollFactor(0).setDepth(2000).setVisible(false);
 
-    this.add.text(width - 12, height - 10, "B: 台帳　/　C: ステータス　/　M: 地図　/　ESC: ハブに戻る", {
+    const controlsHint = this.add.text(width - 12, height - 10, "B: 台帳　/　C: ステータス　/　M: 地図　/　ESC: ハブに戻る", {
       fontSize: "13px", color: "#aaaaaa",
     }).setOrigin(1, 1).setScrollFactor(0).setDepth(1000);
+    this.uiLayer.add([hudBg, this.hudText, this.hpBarBg, this.hpBarFg, this.expBarBg, this.expBarFg, this.deadText, controlsHint]);
 
     // --- 入力 ---
     this.keys = addMoveKeys(this);
@@ -360,7 +374,7 @@ export class MmoGameScene extends Phaser.Scene {
     const areaTitle = isTown
       ? (state.groundName || "ホームタウン")
       : `${state.groundName || "狩場"}　B${state.floor || 1}`;
-    this.add.text(width / 2, 16, areaTitle, {
+    const areaInfo = this.add.text(width / 2, 16, areaTitle, {
       fontSize: "20px", color: isTown ? "#ffd9a0" : ground === "cave" ? "#c9b6ff" : "#a0ffb0",
       fontStyle: "bold", stroke: "#000", strokeThickness: 4,
     }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(1000);
@@ -372,7 +386,8 @@ export class MmoGameScene extends Phaser.Scene {
     this.chatLog = this.add.text(12, height - 120, "", {
       fontSize: "14px", color: "#ffffff", stroke: "#000", strokeThickness: 3, lineSpacing: 4,
     }).setOrigin(0, 1).setScrollFactor(0).setDepth(1400);
-    this.add.text(12, height - 10, "/ でチャット", { fontSize: "12px", color: "#888888" }).setScrollFactor(0).setDepth(1000).setOrigin(0, 1);
+    const chatHint = this.add.text(12, height - 10, "/ でチャット", { fontSize: "12px", color: "#888888" }).setScrollFactor(0).setDepth(1000).setOrigin(0, 1);
+    this.uiLayer.add([areaInfo, this.gatePrompt, this.chatLog, chatHint]);
     this.input.keyboard!.on("keydown", (e: KeyboardEvent) => {
       if (e.key === "/" && !this.chatOpen && !this.overlayOpen() && !this.traveling) {
         e.preventDefault();
@@ -430,6 +445,7 @@ export class MmoGameScene extends Phaser.Scene {
   // 達成課題クリア時のポップアップ。
   private showAchievement(m: { desc: string; cardId: number | null }) {
     const cont = this.add.container(this.scale.width / 2, 230).setScrollFactor(0).setDepth(5200);
+    this.uiLayer.add(cont);
     const bg = this.add.rectangle(0, 0, 360, 88, 0x1a1530, 0.97).setStrokeStyle(3, 0xffd966);
     const title = this.add.text(0, -22, "🏅 達成！", { fontSize: "18px", color: "#ffd966", fontStyle: "bold" }).setOrigin(0.5);
     const desc = this.add.text(0, 6, m.desc, { fontSize: "15px", color: "#ece7f5" }).setOrigin(0.5);
@@ -495,8 +511,9 @@ export class MmoGameScene extends Phaser.Scene {
     this.traveling = true;
     this.closeWorldMap();
     const { width, height } = this.scale;
-    this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.6).setScrollFactor(0).setDepth(9000);
-    this.add.text(width / 2, height / 2, "移動中…", { fontSize: "28px", color: "#ffffff", fontStyle: "bold" }).setOrigin(0.5).setScrollFactor(0).setDepth(9001);
+    const travelBg = this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.6).setScrollFactor(0).setDepth(9000);
+    const travelTxt = this.add.text(width / 2, height / 2, "移動中…", { fontSize: "28px", color: "#ffffff", fontStyle: "bold" }).setOrigin(0.5).setScrollFactor(0).setDepth(9001);
+    this.uiLayer.add([travelBg, travelTxt]);
     try {
       const { room } = await joinPublicRoom("mmo", loadPlayerName(), area);
       await this.room.leave();
@@ -548,6 +565,7 @@ export class MmoGameScene extends Phaser.Scene {
     if (this.overlayOpen()) { this.closeBinder(); this.closeStatus(); }
     this.worldmapSel = 0;
     const layer = this.add.container(0, 0).setScrollFactor(0).setDepth(7000);
+    this.uiLayer.add(layer);
     this.worldmapLayer = layer;
     this.drawWorldMap();
   }
@@ -628,6 +646,7 @@ export class MmoGameScene extends Phaser.Scene {
     const meta = c ? RARITY_META[c.rarity] : null;
     const cx = this.scale.width / 2;
     const cont = this.add.container(cx, 150).setScrollFactor(0).setDepth(5000);
+    this.uiLayer.add(cont);
     const bg = this.add.rectangle(0, 0, 320, 92, 0x15101f, 0.96).setStrokeStyle(3, meta?.colorNum ?? 0xe8b04b);
     const icon = this.makeRelicIcon(-128, 0, c?.name ?? "", cardId, 64, false);
     const title = this.add.text(-92, -18, "✦ 霊宝を発見！", { fontSize: "16px", color: "#e8c87e", fontStyle: "bold" }).setOrigin(0, 0.5);
@@ -660,6 +679,7 @@ export class MmoGameScene extends Phaser.Scene {
     const { width, height } = this.scale;
     this.statusLayer?.destroy();
     const layer = this.add.container(0, 0).setScrollFactor(0).setDepth(7000);
+    this.uiLayer.add(layer);
     this.statusLayer = layer;
     const T = (x: number, y: number, t: string, size: number, color: string, bold = false) => {
       const o = this.add.text(x, y, t, { fontSize: `${size}px`, color, fontStyle: bold ? "bold" : "normal" });
@@ -830,6 +850,7 @@ export class MmoGameScene extends Phaser.Scene {
     this.closeStatus(); // 同時には開かない
     this.binderLayer?.destroy();
     const layer = this.add.container(0, 0).setScrollFactor(0).setDepth(7000);
+    this.uiLayer.add(layer);
     this.binderLayer = layer;
     this.binderSel = 0;
     this.binderDetail = false;
@@ -1208,6 +1229,7 @@ export class MmoGameScene extends Phaser.Scene {
     for (let i = 0; i < 6; i++) {
       const angle = (i / 6) * Math.PI * 2 + Math.random() * 0.4;
       const star = this.add.star(x, y, 4, 3, 6, 0xffe066).setDepth(6000);
+      this.worldLayer.add(star);
       this.tweens.add({
         targets: star,
         x: x + Math.cos(angle) * 30,
@@ -1248,6 +1270,7 @@ export class MmoGameScene extends Phaser.Scene {
     const cy = y + Math.sin(dir) * (length / 2);
     const rect = this.add.rectangle(cx, cy, length, width, 0xffffff, 0.2)
       .setRotation(dir).setDepth(4900);
+    this.worldLayer.add(rect);
     this.tweens.add({ targets: rect, alpha: 0, duration: 160, onComplete: () => rect.destroy() });
   }
 
@@ -1257,6 +1280,7 @@ export class MmoGameScene extends Phaser.Scene {
     const t = this.add.text(v.container.x, v.container.y - CHAR_DISPLAY_H, `-${Math.round(dmg)}`, {
       fontSize: "20px", color: "#ff7878", fontStyle: "bold", stroke: "#000", strokeThickness: 4,
     }).setOrigin(0.5).setDepth(6500);
+    this.worldLayer.add(t);
     this.tweens.add({
       targets: t, y: t.y - 36, alpha: { from: 1, to: 0 },
       duration: 700, ease: "Quad.easeOut", onComplete: () => t.destroy(),
@@ -1270,6 +1294,7 @@ export class MmoGameScene extends Phaser.Scene {
     const t = this.add.text(v.container.x, v.container.y - CHAR_DISPLAY_H - 20, "LEVEL UP!", {
       fontSize: "22px", color: "#ffe066", fontStyle: "bold", stroke: "#000", strokeThickness: 4,
     }).setOrigin(0.5).setDepth(6600);
+    this.worldLayer.add(t);
     this.tweens.add({
       targets: t, y: t.y - 40, alpha: { from: 1, to: 0 }, scale: { from: 1.4, to: 1 },
       duration: 900, ease: "Quad.easeOut", onComplete: () => t.destroy(),

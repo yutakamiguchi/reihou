@@ -13,6 +13,11 @@ new Phaser.Game({
   parent: "game",
   width: 1280,
   height: 720,
+  // 内部解像度は1280x720のまま、ブラウザいっぱいに拡大表示（比率維持・中央寄せ）
+  scale: {
+    mode: Phaser.Scale.FIT,
+    autoCenter: Phaser.Scale.CENTER_BOTH,
+  },
   backgroundColor: "#2a2f3a",
   scene: [
     HubScene,
