@@ -317,7 +317,8 @@ export class BombermanRoom extends Room<BombermanState> {
     this.state.phase = "ended";
     this.clock.setTimeout(() => {
       this.state.phase = "lobby";
-      this.state.players.forEach(p => { p.ready = false; });
+      // ボットは ready を送れないので常に準備OKのまま（人間のみ再readyを要求）
+      this.state.players.forEach(p => { p.ready = !!p.isBot; });
     }, 5000);
   }
 
