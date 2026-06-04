@@ -24,8 +24,10 @@ primary_region = "nrt"
     timeout = "4s"
     grace_period = "10s"
 
+# リアルタイム30Hzの権威サーバー。256MBだとGC停止で固定ステップを取りこぼし
+# プレイヤーが巻き戻る(ラバーバンド)ため、CPU/RAMを増強して安定させる。
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "256mb"
+  size = "shared-cpu-2x"
+  memory = "1gb"
 
 # 自動デプロイ動作確認用（変更してpushするとFlyへ自動デプロイ）
