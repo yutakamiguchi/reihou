@@ -38,13 +38,13 @@ const WORLD_LINKS: Array<[string, string]> = [
 // 敵の種別ごとの見た目（色・大きさ）。server の MOB_KINDS と対応。
 // 専用イラストは client/public/mobs/<種別>.png を置き、MOB_IMAGE_KINDS に種別を足すと切り替わる。
 const MOB_STYLE: Record<string, { tint: number; scale: number; label?: string }> = {
-  grunt:    { tint: 0x88dd88, scale: 1.0 },
-  swift:    { tint: 0x9b7ad0, scale: 0.9 },
-  tank:     { tint: 0xc8a06a, scale: 1.5 },
-  brute:    { tint: 0xe0644a, scale: 1.2 },
-  slime:    { tint: 0x6be36b, scale: 0.85 },
+  grunt:    { tint: 0x88dd88, scale: 0.85 },
+  swift:    { tint: 0x9b7ad0, scale: 1.05 },
+  tank:     { tint: 0xc8a06a, scale: 1.95 },
+  brute:    { tint: 0xe0644a, scale: 1.55 },
+  slime:    { tint: 0x6be36b, scale: 0.72 },
   spider:   { tint: 0x8a5ad0, scale: 1.0 },
-  skeleton: { tint: 0xdddddd, scale: 1.05 },
+  skeleton: { tint: 0xdddddd, scale: 1.35 },
   scorpion: { tint: 0xd0a85a, scale: 1.25 },
   serpent:  { tint: 0x7ad06b, scale: 1.15 },
   boss:     { tint: 0xb05ad0, scale: 2.1, label: "災厄の主" },
