@@ -73,6 +73,8 @@ export class MmoGameScene extends Phaser.Scene {
   private chatLog!: Phaser.GameObjects.Text;
   private chatLines: string[] = [];
   private worldLayer!: Phaser.GameObjects.Layer;
+  // 当たり判定（サーバーと一致させる）。予測移動でのめり込み防止に使う
+  private obstacles: Array<{ x: number; y: number; w: number; h: number }> = [];
   private predictReady = false;
   private cardById = new Map<number, Card>(); // 霊宝メタ（ドロップ表示用）
   private binderLayer?: Phaser.GameObjects.Container;
@@ -109,6 +111,7 @@ export class MmoGameScene extends Phaser.Scene {
     this.mobs.clear();
     this.relicViews.clear();
     this.gates = [];
+    this.obstacles = [];
     this.nearGate = null;
     this.traveling = false;
     this.predictReady = false;
@@ -184,6 +187,17 @@ export class MmoGameScene extends Phaser.Scene {
       const im = this.add.image(cx, fy, tex(k)).setOrigin(0.5, 1).setDepth(fy);
       this.worldLayer.add(im);
     }
+    // 当たり判定（サーバーの buildTownObstacles と座標を一致させる）
+    const box = (x: number, y: number, w: number, h: number) => this.obstacles.push({ x, y, w, h });
+    const house = (cx: number, fy: number) => box(cx - 46, fy - 70, 92, 70);
+    house(250, 250); house(640, 250); house(1040, 250);
+    box(640 - 16, 440 - 28, 32, 28); // 井戸
+    box(1090 - 10, 440 - 18, 20, 18); // 看板
+    const trunk = (cx: number, fy: number) => box(cx - 10, fy - 16, 20, 16);
+    trunk(130, 470); trunk(1210, 560); trunk(430, 560); trunk(900, 580);
+    trunk(180, 720); trunk(1150, 720); trunk(760, 210);
+    box(560 - 14, 600 - 12, 28, 12); // 岩
+    box(470 - 14, 300 - 12, 28, 12);
   }
 
   // 霊宝のアイコン：イラストがあればスプライト、無ければ絵文字。boxPx 内に収める。
@@ -870,8 +884,10 @@ export class MmoGameScene extends Phaser.Scene {
     if (len > 0) { dx /= len; dy /= len; }
     const mapW = (this.room.state as any).mapWidth;
     const mapH = (this.room.state as any).mapHeight;
-    let nx = px + dx * PLAYER_SPEED * dt;
-    let ny = py + dy * PLAYER_SPEED * dt;
+    // 軸分離（サーバーの moveEntity と同じ順序）で障害物に当てる
+    let nx = px, ny = py;
+    if (dx !== 0) nx = this.collideAxis(px + dx * PLAYER_SPEED * dt, py, dx > 0, true);
+    if (dy !== 0) ny = this.collideAxis(nx, py + dy * PLAYER_SPEED * dt, dy > 0, false);
     nx = Phaser.Math.Clamp(nx, ENTITY_RADIUS, mapW - ENTITY_RADIUS);
     ny = Phaser.Math.Clamp(ny, ENTITY_RADIUS, mapH - ENTITY_RADIUS);
     const drift = Math.hypot(entity.x - nx, entity.y - ny);
@@ -879,6 +895,19 @@ export class MmoGameScene extends Phaser.Scene {
     nx = Phaser.Math.Linear(nx, entity.x, corr);
     ny = Phaser.Math.Linear(ny, entity.y, corr);
     return { x: nx, y: ny };
+  }
+
+  // 移動先(x,y)を障害物(半径ENTITY_RADIUS膨張)から押し戻す。サーバーと同じロジック
+  private collideAxis(x: number, y: number, positive: boolean, isX: boolean): number {
+    const R = ENTITY_RADIUS;
+    for (const o of this.obstacles) {
+      const x0 = o.x - R, y0 = o.y - R, x1 = o.x + o.w + R, y1 = o.y + o.h + R;
+      if (x > x0 && x < x1 && y > y0 && y < y1) {
+        if (isX) x = positive ? x0 : x1;
+        else y = positive ? y0 : y1;
+      }
+    }
+    return isX ? x : y;
   }
 
   // --- プレイヤー ---

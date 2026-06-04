@@ -93,6 +93,8 @@ interface MobAI {
 export class MmoRoom extends Room<MmoState> {
   maxClients = 16;
   private inputs = new Map<string, InputState>();
+  // 静的な当たり判定（AABB: 左上x,y＋幅高さ）。町のみ設定。clientの装飾と座標を一致させる
+  private obstacles: Array<{ x: number; y: number; w: number; h: number }> = [];
   private mobAI = new Map<string, MobAI>();
   private mobSeq = 0;
   private relicSeq = 0;
@@ -113,6 +115,7 @@ export class MmoRoom extends Room<MmoState> {
     const area = options?.area === "town" ? "town" : "field";
     this.state.area = area;
     if (area === "town") { this.state.mapWidth = 1280; this.state.mapHeight = 768; } // Tiledマップ(40x24*32)に一致
+    if (area === "town") this.buildTownObstacles();
     this.setupGates(area);
 
     if (this.isField()) {
@@ -296,6 +299,11 @@ export class MmoRoom extends Room<MmoState> {
   // --- スポーン ---
 
   private placeRandomly(e: { x: number; y: number }) {
+    for (let i = 0; i < 30; i++) {
+      const x = 80 + Math.random() * (this.state.mapWidth - 160);
+      const y = 80 + Math.random() * (this.state.mapHeight - 160);
+      if (!this.isBlocked(x, y)) { e.x = x; e.y = y; return; }
+    }
     e.x = 80 + Math.random() * (this.state.mapWidth - 160);
     e.y = 80 + Math.random() * (this.state.mapHeight - 160);
   }
@@ -325,6 +333,24 @@ export class MmoRoom extends Room<MmoState> {
   private isField(): boolean { return this.state.area === "field"; }
 
   // エリアごとのゲートを配置（近接＋Eで移動）。
+  // 町の当たり判定を構築。clientの buildTownDecor() と (cx, 足元y) を一致させること
+  private buildTownObstacles() {
+    const box = (x: number, y: number, w: number, h: number) => this.obstacles.push({ x, y, w, h });
+    // 建物（足元y基準。壁の下側のみブロック＝屋根の裏には回り込める）
+    const house = (cx: number, fy: number) => box(cx - 46, fy - 70, 92, 70);
+    house(250, 250); house(640, 250); house(1040, 250);
+    // 井戸・看板
+    box(640 - 16, 440 - 28, 32, 28);
+    box(1090 - 10, 440 - 18, 20, 18);
+    // 木の幹
+    const trunk = (cx: number, fy: number) => box(cx - 10, fy - 16, 20, 16);
+    trunk(130, 470); trunk(1210, 560); trunk(430, 560); trunk(900, 580);
+    trunk(180, 720); trunk(1150, 720); trunk(760, 210);
+    // 岩
+    box(560 - 14, 600 - 12, 28, 12);
+    box(470 - 14, 300 - 12, 28, 12);
+  }
+
   private setupGates(area: string) {
     const g = new Gate();
     g.y = this.state.mapHeight / 2;
@@ -472,9 +498,32 @@ export class MmoRoom extends Room<MmoState> {
   }
 
   private moveEntity(e: { x: number; y: number; vx: number; vy: number }, dt: number) {
-    e.x = e.x + e.vx * dt;
-    e.y = e.y + e.vy * dt;
+    // 軸分離で動かす（壁ずりできる）。障害物が無いエリア(狩場)では素通り
+    if (e.vx !== 0) e.x = this.collideAxis(e.x + e.vx * dt, e.y, e.vx > 0, true);
+    if (e.vy !== 0) e.y = this.collideAxis(e.x, e.y + e.vy * dt, e.vy > 0, false);
     this.clampToMap(e);
+  }
+
+  // 移動先(x,y)を障害物(半径ENTITY_RADIUS膨張)から押し戻し、移動軸の座標を返す
+  private collideAxis(x: number, y: number, positive: boolean, isX: boolean): number {
+    const R = ENTITY_RADIUS;
+    for (const o of this.obstacles) {
+      const x0 = o.x - R, y0 = o.y - R, x1 = o.x + o.w + R, y1 = o.y + o.h + R;
+      if (x > x0 && x < x1 && y > y0 && y < y1) {
+        if (isX) x = positive ? x0 : x1;
+        else y = positive ? y0 : y1;
+      }
+    }
+    return isX ? x : y;
+  }
+
+  // 障害物に重ならない座標を返す（初期配置・リスポーン用）
+  private isBlocked(x: number, y: number): boolean {
+    for (const o of this.obstacles) {
+      if (x > o.x - ENTITY_RADIUS && x < o.x + o.w + ENTITY_RADIUS &&
+          y > o.y - ENTITY_RADIUS && y < o.y + o.h + ENTITY_RADIUS) return true;
+    }
+    return false;
   }
 
   private clampToMap(e: { x: number; y: number }) {
