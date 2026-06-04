@@ -22,8 +22,8 @@ const MOB_DISPLAY_H = 52;
 
 // 世界地図のエリア定義（mx,my は地図パネル内の相対位置 0..1）。エリア追加はここに足すだけ。
 const WORLD_AREAS: Array<{ key: string; name: string; icon: string; mx: number; my: number; blurb: string }> = [
-  { key: "town", name: "ホームタウン", icon: "🏠", mx: 0.26, my: 0.52, blurb: "霊宝を整える安全な拠点。台帳を眺め、次の探索に備える。" },
-  { key: "field", name: "狩場", icon: "⚔️", mx: 0.72, my: 0.40, blurb: "魔物が徘徊する広野。霊宝を求めて踏み入る、危険と発見の地。" },
+  { key: "town", name: "ホームタウン", icon: "🏠", mx: 0.265, my: 0.55, blurb: "霊宝を整える安全な拠点。台帳を眺め、次の探索に備える。" },
+  { key: "field", name: "狩場", icon: "⚔️", mx: 0.71, my: 0.42, blurb: "魔物が徘徊する広野。霊宝を求めて踏み入る、危険と発見の地。" },
 ];
 // エリア同士の繋がり（双方向）。
 const WORLD_LINKS: Array<[string, string]> = [
@@ -157,6 +157,7 @@ export class MmoGameScene extends Phaser.Scene {
     this.load.image("townTiles", "/map/town_tiles.png");
     this.load.tilemapTiledJSON("fieldmap", "/map/field.json");
     this.load.image("fieldTiles", "/map/field_tiles.png");
+    this.load.image("worldmap", "/map/worldmap.png"); // 世界地図の地形背景
     // 装飾（建物・木・花・地面など。BaseChip素材から切り出し）
     for (const k of MmoGameScene.DECO_KEYS) {
       this.load.image(`deco:${k}`, `/map/deco/${k}.png`);
@@ -544,37 +545,50 @@ export class MmoGameScene extends Phaser.Scene {
     layer.add(this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.82).setInteractive());
     layer.add(this.add.text(width / 2, 34, "世界地図", { fontSize: "30px", color: "#e8c87e", fontStyle: "bold" }).setOrigin(0.5));
 
-    // 地図パネル（羊皮紙風）
-    const pw = Math.min(820, width - 80), ph = Math.min(440, height - 200);
+    // 地図パネル（地形イラスト＝worldmap、無ければ羊皮紙色のベタ＋繋がり線）
+    const pw = Math.min(820, width - 80), ph = pw / (1640 / 880); // 地図画像のアスペクト比に合わせる
     const px = width / 2 - pw / 2, py = 86;
-    layer.add(this.add.rectangle(width / 2, py + ph / 2, pw, ph, 0x2a2335, 0.96).setStrokeStyle(3, 0x6b5a8f));
+    const hasMap = this.textures.exists("worldmap");
+    if (hasMap) {
+      const bg = this.add.image(width / 2, py + ph / 2, "worldmap");
+      bg.setDisplaySize(pw, ph);
+      layer.add(bg);
+    } else {
+      layer.add(this.add.rectangle(width / 2, py + ph / 2, pw, ph, 0x2a2335, 0.96).setStrokeStyle(3, 0x6b5a8f));
+    }
     const pos = (a: { mx: number; my: number }) => ({ x: px + a.mx * pw, y: py + a.my * ph });
 
-    // 繋がり（線）
-    const g = this.add.graphics();
-    g.lineStyle(4, 0x6b5a8f, 0.9);
-    for (const [a, b] of WORLD_LINKS) {
-      const A = WORLD_AREAS.find((w) => w.key === a), B = WORLD_AREAS.find((w) => w.key === b);
-      if (!A || !B) continue;
-      const pa = pos(A), pb = pos(B);
-      g.lineBetween(pa.x, pa.y, pb.x, pb.y);
+    // 地図画像が無いときだけ、繋がりを線で描く（地図には小道が描き込み済み）
+    if (!hasMap) {
+      const g = this.add.graphics();
+      g.lineStyle(4, 0x6b5a8f, 0.9);
+      for (const [a, b] of WORLD_LINKS) {
+        const A = WORLD_AREAS.find((w) => w.key === a), B = WORLD_AREAS.find((w) => w.key === b);
+        if (!A || !B) continue;
+        const pa = pos(A), pb = pos(B);
+        g.lineBetween(pa.x, pa.y, pb.x, pb.y);
+      }
+      layer.add(g);
     }
-    layer.add(g);
 
-    // エリアノード
+    // エリアノード（地形マップ上のマーカー）
     for (const a of WORLD_AREAS) {
       const p = pos(a);
       const isCur = a.key === cur;
       const isSel = a.key === selKey;
-      const ringColor = isCur ? 0xe8b04b : isSel ? 0x5fd0e0 : 0x8a7fb0;
-      const ring = this.add.circle(p.x, p.y, 34, 0x15101f, 1).setStrokeStyle(isCur || isSel ? 5 : 3, ringColor);
+      const ringColor = isCur ? 0xe8b04b : isSel ? 0x2aa6c0 : 0x6b4f2a;
+      const ring = this.add.circle(p.x, p.y, 26, 0x231a12, 0.96).setStrokeStyle(isCur || isSel ? 5 : 3, ringColor);
       layer.add(ring);
       if (isSel && !isCur) {
-        this.tweens.add({ targets: ring, scale: { from: 1, to: 1.12 }, duration: 600, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
+        this.tweens.add({ targets: ring, scale: { from: 1, to: 1.15 }, duration: 600, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
       }
-      layer.add(this.add.text(p.x, p.y, a.icon, { fontSize: "30px" }).setOrigin(0.5));
-      layer.add(this.add.text(p.x, p.y + 48, a.name, { fontSize: "18px", color: "#ece7f5", fontStyle: "bold" }).setOrigin(0.5));
-      if (isCur) layer.add(this.add.text(p.x, p.y - 50, "現在地", { fontSize: "13px", color: "#e8b04b", fontStyle: "bold" }).setOrigin(0.5));
+      layer.add(this.add.text(p.x, p.y, a.icon, { fontSize: "24px" }).setOrigin(0.5));
+      layer.add(this.add.text(p.x, p.y + 38, a.name, {
+        fontSize: "17px", color: "#fff4dc", fontStyle: "bold", stroke: "#3a2a18", strokeThickness: 4,
+      }).setOrigin(0.5));
+      if (isCur) layer.add(this.add.text(p.x, p.y - 40, "現在地", {
+        fontSize: "13px", color: "#ffe08a", fontStyle: "bold", stroke: "#3a2a18", strokeThickness: 4,
+      }).setOrigin(0.5));
     }
 
     // 下部：選択中エリアの説明＋操作
