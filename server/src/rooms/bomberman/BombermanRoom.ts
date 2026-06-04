@@ -328,7 +328,11 @@ export class BombermanRoom extends Room<BombermanState> {
     const p = this.state.players.get(sid);
     if (!p || !p.alive) return;
     if (p.activeBombs >= p.maxBombs) return;
-    const col = p.col, row = p.row;
+    // 「今キャラが乗っているマス」に置く（移動中も見た目の立ち位置に一致）。
+    // p.col/p.row は移動元のままになるため、現在のピクセル位置からセルを算出する。
+    const ts = this.state.tileSize;
+    const col = Math.max(0, Math.min(this.state.cols - 1, Math.floor(p.x / ts)));
+    const row = Math.max(0, Math.min(this.state.rows - 1, Math.floor(p.y / ts)));
     if (this.bombAt(col, row)) return;
     const bomb = new Bomb();
     bomb.id = `b${this.bombSeq++}`;
