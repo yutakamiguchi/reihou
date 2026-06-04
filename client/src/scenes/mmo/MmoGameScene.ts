@@ -1152,7 +1152,7 @@ export class MmoGameScene extends Phaser.Scene {
 
   private addMobView(id: string, m: any) {
     const style = MOB_STYLE[m.kind] ?? MOB_STYLE.grunt;
-    const sizePx = Math.round(60 * style.scale); // 基準サイズ（種別ごとの比率は MOB_STYLE.scale）
+    const sizePx = Math.round(88 * style.scale); // 基準サイズ（種別ごとの比率は MOB_STYLE.scale）
     const cyOff = -sizePx * 0.4;
     const container = this.add.container(m.x, m.y);
     const shadow = this.add.ellipse(0, 4, 24 * style.scale, 8 * style.scale, 0x000000, 0.4);
