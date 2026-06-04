@@ -116,8 +116,9 @@ export class MmoRoom extends Room<MmoState> {
   // エリア種別（解析済み）。ground="town"以外が狩場。
   private ground = "town";
   private floor = 0;
-  private floorMul = 1;        // 階層による敵HP/ATK倍率
-  private floorRareBias = 0;   // 階層によるレア寄せ加算
+  private floorHpMul = 1;      // 階層による敵HP倍率（深層ほど急カーブ）
+  private floorAtkMul = 1;     // 階層による敵ATK倍率（緩やかに上昇）
+  private floorRareBias = 0;   // 階層によるレア寄せ加算（深層ほど厚く＝報酬）
   private floorMobs: Array<[string, number]> = [];
   private hasBoss = false;
   private mobSeq = 0;
@@ -335,8 +336,8 @@ export class MmoRoom extends Room<MmoState> {
     m.id = id;
     m.kind = kind;
     m.level = Math.max(1, this.floor); // 階層＝レベル（EXP・表示用）
-    const mul = this.floorMul; // 深い階ほど硬く・痛い
-    m.maxHp = Math.round(def.maxHp * mul); m.hp = m.maxHp; m.atk = Math.round(def.atk * mul);
+    m.maxHp = Math.round(def.maxHp * this.floorHpMul); m.hp = m.maxHp; // 深層ほど硬い
+    m.atk = Math.round(def.atk * this.floorAtkMul);                    // 攻撃は緩やかに
     this.placeRandomly(m);
     this.state.mobs.set(id, m);
     this.mobAI.set(id, {
@@ -370,8 +371,10 @@ export class MmoRoom extends Room<MmoState> {
     const g = GROUNDS[parts[1]] ?? GROUNDS.grass;
     const floor = Math.max(1, Math.min(parseInt(parts[2] ?? "1", 10) || 1, g.floors));
     this.ground = g.id; this.floor = floor;
-    this.floorMul = 1 + 0.18 * (floor - 1);
-    this.floorRareBias = 0.12 * (floor - 1);
+    const f = floor - 1;
+    this.floorHpMul = 1 + 0.11 * f * f;  // 深層ほど急に硬く（B1=1.0/B2=1.11/B3=1.44/B4=1.99/B5=2.76）
+    this.floorAtkMul = 1 + 0.20 * f;     // 攻撃は緩やかに（B1=1.0…B5=1.8）即死を避ける
+    this.floorRareBias = 0.15 * f;       // 深層ほどレア寄り（B5=0.6）
     this.floorMobs = floorMobWeights(g, floor);
     this.hasBoss = floor === g.floors;
     this.state.area = `hunt:${g.id}:${floor}`;
