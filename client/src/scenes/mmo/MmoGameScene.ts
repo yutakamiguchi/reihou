@@ -20,7 +20,7 @@ const PLAYER_SPEED = 140;
 const ENTITY_RADIUS = 14;
 const CHAR_DISPLAY_H = 56;
 const MOB_DISPLAY_H = 52;
-const MMO_ZOOM = 1.3; // 狩場/町カメラのズーム（>1で寄る）。HUDはUI専用カメラなので影響を受けない
+const MMO_ZOOM = 1.95; // 狩場/町カメラのズーム（>1で寄る）。内部解像度1920に合わせ、見える範囲は従来と同等。HUDはUI専用カメラなので影響を受けない
 
 // 世界地図のエリア定義。key=地形ID（state.ground と一致）、travel=移動先エリア文字列。
 // mx,my は地図パネル内の相対位置 0..1（worldmap.png の地点と一致させる）。エリア追加はここに足すだけ。

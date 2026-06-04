@@ -11,9 +11,10 @@ import { LoginScene } from "./scenes/auth/LoginScene";
 new Phaser.Game({
   type: Phaser.AUTO,
   parent: "game",
-  width: 1280,
-  height: 720,
-  // 内部解像度は1280x720のまま、ブラウザいっぱいに拡大表示（比率維持・中央寄せ）
+  // 内部解像度を高め(1920x1080)にして「引き伸ばし」をなくす＝イラスト/文字をくっきり。
+  // FITでブラウザに合わせて等倍〜縮小表示（縮小はむしろシャープ）。
+  width: 1920,
+  height: 1080,
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
