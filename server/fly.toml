@@ -27,3 +27,5 @@ primary_region = "nrt"
 [[vm]]
   size = "shared-cpu-1x"
   memory = "256mb"
+
+# 自動デプロイ動作確認用（変更してpushするとFlyへ自動デプロイ）
