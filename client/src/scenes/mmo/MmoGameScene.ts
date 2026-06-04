@@ -138,6 +138,52 @@ export class MmoGameScene extends Phaser.Scene {
     // ホームタウンのタイルマップ（Tiled製）
     this.load.tilemapTiledJSON("townmap", "/map/town.json");
     this.load.image("townTiles", "/map/town_tiles.png");
+    // 町の装飾（建物・木・花・地面など。BaseChip素材から切り出し）
+    for (const k of MmoGameScene.DECO_KEYS) {
+      this.load.image(`deco:${k}`, `/map/deco/${k}.png`);
+    }
+  }
+
+  // 町に置く装飾テクスチャ（/map/deco/<key>.png）
+  private static readonly DECO_KEYS = [
+    "house_brick", "house_wood", "house_tan",
+    "tree_green", "tree_green2", "tree_autumn",
+    "bush", "bush2", "rock", "rock2",
+    "flower_white", "flower_pink", "flower_blue", "sunflower",
+    "well", "signpost", "scarecrow", "corn", "pumpkin", "cabbage",
+    "path_cobble", "path_dirt",
+  ];
+
+  // ホームタウンの装飾を配置（広場・道・建物・畑・木々）。座標は 1280x768 前提。
+  private buildTownDecor() {
+    if (!this.textures.exists("deco:house_brick")) return;
+    const tex = (k: string) => `deco:${k}`;
+    // 地面（石畳の広場・道・畑の土）を TileSprite で塗る
+    const fill = (k: string, x0: number, y0: number, x1: number, y1: number) => {
+      const ts = this.add.tileSprite(x0, y0, x1 - x0, y1 - y0, tex(k)).setOrigin(0, 0).setDepth(-50);
+      this.worldLayer.add(ts);
+    };
+    fill("path_cobble", 512, 320, 768, 512); // 中央広場
+    fill("path_cobble", 768, 352, 1216, 448); // 広場→右の門への道
+    fill("path_dirt", 96, 560, 288, 704); // 畑の土
+    // オブジェクト [key, 中心x, 足元y]（足元yで奥行きソート＝プレイヤーが背後に回り込める）
+    const objs: Array<[string, number, number]> = [
+      ["house_brick", 250, 250], ["house_tan", 640, 250], ["house_wood", 1040, 250],
+      ["tree_green", 130, 470], ["tree_green", 1210, 560], ["tree_green2", 430, 560],
+      ["tree_green2", 900, 580], ["tree_autumn", 180, 720], ["tree_autumn", 1150, 720],
+      ["tree_green", 760, 210],
+      ["well", 640, 440], ["signpost", 1090, 440],
+      ["scarecrow", 190, 640], ["corn", 130, 600], ["corn", 250, 600],
+      ["pumpkin", 160, 690], ["cabbage", 220, 690],
+      ["bush", 350, 420], ["bush2", 880, 660], ["bush", 1090, 620],
+      ["rock", 560, 600], ["rock2", 470, 300], ["bush2", 300, 520],
+      ["flower_white", 470, 470], ["flower_pink", 720, 540], ["flower_blue", 360, 640],
+      ["sunflower", 980, 540], ["flower_pink", 560, 300], ["flower_white", 840, 470],
+    ];
+    for (const [k, cx, fy] of objs) {
+      const im = this.add.image(cx, fy, tex(k)).setOrigin(0.5, 1).setDepth(fy);
+      this.worldLayer.add(im);
+    }
   }
 
   // 霊宝のアイコン：イラストがあればスプライト、無ければ絵文字。boxPx 内に収める。
@@ -178,6 +224,9 @@ export class MmoGameScene extends Phaser.Scene {
     }
 
     this.worldLayer = this.add.layer();
+
+    // 町なら装飾（広場・道・建物・畑・木々）を配置
+    if (isTown) this.buildTownDecor();
 
     // --- カメラ ---
     this.cameras.main.setBounds(0, 0, mapW, mapH);
