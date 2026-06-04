@@ -372,8 +372,8 @@ export class MmoRoom extends Room<MmoState> {
     const floor = Math.max(1, Math.min(parseInt(parts[2] ?? "1", 10) || 1, g.floors));
     this.ground = g.id; this.floor = floor;
     const f = floor - 1;
-    this.floorHpMul = 1 + 0.11 * f * f;  // 深層ほど急に硬く（B1=1.0/B2=1.11/B3=1.44/B4=1.99/B5=2.76）
-    this.floorAtkMul = 1 + 0.20 * f;     // 攻撃は緩やかに（B1=1.0…B5=1.8）即死を避ける
+    this.floorHpMul = Math.pow(2.3, f);  // 1階層ごとにHP×2.3（B2=2.3 … B5≈28倍）
+    this.floorAtkMul = Math.pow(1.5, f); // 攻撃は1階層ごと×1.5（B5≈5倍）一撃死を回避
     this.floorRareBias = 0.15 * f;       // 深層ほどレア寄り（B5=0.6）
     this.floorMobs = floorMobWeights(g, floor);
     this.hasBoss = floor === g.floors;
