@@ -59,7 +59,7 @@ export class BombermanGameScene extends Phaser.Scene {
   private gridContainer?: Phaser.GameObjects.Container;
 
   private players = new Map<string, PlayerView>();
-  private bombs = new Map<string, Phaser.GameObjects.Container>();
+  private bombs = new Map<string, { cont: Phaser.GameObjects.Container; body: Phaser.GameObjects.Arc; explodesAt: number; fuseMs: number }>();
   private flames = new Map<string, Phaser.GameObjects.Rectangle>();
   private items = new Map<string, Phaser.GameObjects.Container>();
   private softBlocks = new Map<string, Phaser.GameObjects.Rectangle>();
@@ -219,6 +219,7 @@ export class BombermanGameScene extends Phaser.Scene {
 
   update(_t: number, dtMs: number) {
     const state: any = this.room.state;
+    this.updateBombColors(); // 爆弾を残り時間で赤くする
 
     // 押下状態から「先押し優先の単一方向」を求める。
     // 斜め同時押しでも1方向だけに絞ることで、予測とサーバーの判断を一致させ
@@ -599,13 +600,24 @@ export class BombermanGameScene extends Phaser.Scene {
     const fuse = this.add.rectangle(0, -this.ts * 0.32, 3, 8, 0xffaa44);
     cont.add([body, hi, fuse]);
     this.worldLayer.add(cont);
-    this.bombs.set(id, cont);
+    this.bombs.set(id, { cont, body, explodesAt: b.explodesAt, fuseMs: Math.max(1, b.explodesAt - Date.now()) });
     this.tweens.add({ targets: cont, scaleX: 1.18, scaleY: 1.18, duration: 280, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
   }
 
+  // 爆発が近づくほど本体を赤くする（暗→赤）。update から毎フレーム呼ぶ。
+  private updateBombColors() {
+    const now = Date.now();
+    this.bombs.forEach((e) => {
+      const f = Phaser.Math.Clamp(1 - (e.explodesAt - now) / e.fuseMs, 0, 1); // 0=設置直後 → 1=爆発直前
+      const r = Math.round(0x22 + (0xee - 0x22) * f);
+      const b = Math.round(0x22 + (0x00 - 0x22) * f);
+      e.body.setFillStyle(Phaser.Display.Color.GetColor(r, 0x22, b));
+    });
+  }
+
   private removeBomb(id: string) {
-    const cont = this.bombs.get(id);
-    if (cont) { cont.destroy(); this.bombs.delete(id); }
+    const e = this.bombs.get(id);
+    if (e) { e.cont.destroy(); this.bombs.delete(id); }
   }
 
   private addFlame(id: string, f: any) {
