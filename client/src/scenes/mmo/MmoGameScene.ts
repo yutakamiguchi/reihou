@@ -45,7 +45,10 @@ const MOB_STYLE: Record<string, { tint: number; scale: number; label?: string }>
   boss:     { tint: 0xb05ad0, scale: 2.1, label: "災厄の主" },
 };
 // 専用イラスト(PNG)を用意した種別。client/public/mobs/<種別>.png。
-const MOB_IMAGE_KINDS: string[] = [];
+const MOB_IMAGE_KINDS: string[] = [
+  "grunt", "swift", "tank", "brute", "slime",
+  "spider", "skeleton", "scorpion", "serpent", "boss",
+];
 const mobTexKey = (kind: string) => `mob:${kind}`;
 
 interface PlayerView {
