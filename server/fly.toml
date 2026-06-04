@@ -25,9 +25,10 @@ primary_region = "nrt"
     grace_period = "10s"
 
 # リアルタイム30Hzの権威サーバー。256MBだとGC停止で固定ステップを取りこぼし
-# プレイヤーが巻き戻る(ラバーバンド)ため、CPU/RAMを増強して安定させる。
+# プレイヤーが巻き戻る(ラバーバンド)ため、RAMを512MB(元の2倍)に増やしてGC停止を回避。
+# CPUは1xで十分（1部屋のsimは軽い）。巻き戻りが再発したらRAM/CPUを再増強。
 [[vm]]
-  size = "shared-cpu-2x"
-  memory = "1gb"
+  size = "shared-cpu-1x"
+  memory = "512mb"
 
 # 自動デプロイ動作確認用（変更してpushするとFlyへ自動デプロイ）
