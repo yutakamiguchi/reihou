@@ -1,0 +1,27 @@
+name: fly-deploy
+
+# server/ を変更して main に push すると、Fly(東京 reihou-server)へ自動デプロイ。
+# 事前準備: GitHub の Secrets に FLY_API_TOKEN を登録（手順は下記コメント参照）。
+#   1) ローカルで:  fly tokens create deploy -a reihou-server
+#   2) 出力されたトークン(FlyV1 ...)をコピー
+#   3) GitHub → リポジトリ Settings → Secrets and variables → Actions
+#      → New repository secret → Name: FLY_API_TOKEN / Value: 貼り付け
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "server/**" # サーバーを変えたときだけ動く
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    concurrency: deploy-reihou-server # 同時デプロイを防ぐ
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      # --ha=false で2台目を作らせない（Colyseusは1台運用が必須）
+      - run: flyctl deploy --remote-only --ha=false
+        working-directory: server
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
