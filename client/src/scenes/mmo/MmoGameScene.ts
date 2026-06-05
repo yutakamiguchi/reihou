@@ -100,6 +100,12 @@ export class MmoGameScene extends Phaser.Scene {
   private cardById = new Map<number, Card>(); // 霊宝メタ（ドロップ表示用）
   private binderLayer?: Phaser.GameObjects.Container;
   private statusLayer?: Phaser.GameObjects.Container;
+  private statusTab: "status" | "items" | "equip" | "other" = "status";
+  private statusContent?: Phaser.GameObjects.Container;
+  private statusTabs: Array<{ key: string; bg: Phaser.GameObjects.Rectangle; label: Phaser.GameObjects.Text }> = [];
+  private statusData?: { cards: any[]; mine: any[]; profile: any; user: any };
+  private statusErr?: string;
+  private statusPanel?: { px: number; py: number; pw: number; ph: number };
   private worldmapLayer?: Phaser.GameObjects.Container;
   private worldmapSel = 0; // 世界地図で選択中の「移動先候補」index
   private binderTab: "common" | "rare" | "legend" = "common";
@@ -364,10 +370,11 @@ export class MmoGameScene extends Phaser.Scene {
     this.input.keyboard!.on("keydown-B", () => this.toggleBinder());
     this.input.keyboard!.on("keydown-C", () => this.toggleStatus());
     this.input.keyboard!.on("keydown-M", () => this.toggleWorldMap());
-    // 台帳のタブ切替（クリック不要）：1=普通 / 2=希少 / 3=秘宝
-    this.input.keyboard!.on("keydown-ONE", () => this.setBinderTab("common"));
-    this.input.keyboard!.on("keydown-TWO", () => this.setBinderTab("rare"));
-    this.input.keyboard!.on("keydown-THREE", () => this.setBinderTab("legend"));
+    // 数字キーのタブ切替。ステータス開時は1〜4でタブ、台帳開時は1〜3でレアリティ
+    this.input.keyboard!.on("keydown-ONE", () => this.statusLayer ? this.setStatusTab("status") : this.setBinderTab("common"));
+    this.input.keyboard!.on("keydown-TWO", () => this.statusLayer ? this.setStatusTab("items") : this.setBinderTab("rare"));
+    this.input.keyboard!.on("keydown-THREE", () => this.statusLayer ? this.setStatusTab("equip") : this.setBinderTab("legend"));
+    this.input.keyboard!.on("keydown-FOUR", () => { if (this.statusLayer) this.setStatusTab("other"); });
     this.input.keyboard!.on("keydown-E", () => this.tryTravel()); // ゲートで移動
 
     // エリア名＋移動プロンプト（画面固定）。狩場は「草原 B2」のように階層も表示
@@ -672,6 +679,9 @@ export class MmoGameScene extends Phaser.Scene {
   private closeStatus() {
     this.statusLayer?.destroy();
     this.statusLayer = undefined;
+    this.statusContent = undefined;
+    this.statusTabs = [];
+    this.statusPanel = undefined;
   }
 
   private async openStatus() {
@@ -682,125 +692,230 @@ export class MmoGameScene extends Phaser.Scene {
     const layer = this.add.container(0, 0).setScrollFactor(0).setDepth(7000);
     this.uiLayer.add(layer);
     this.statusLayer = layer;
-
-    const add = <T extends Phaser.GameObjects.GameObject>(o: T): T => { layer.add(o); return o; };
-    const txt = (x: number, y: number, t: string, size: number, color: string, bold = false) =>
-      add(this.add.text(x, y, t, { fontSize: `${size}px`, color, fontStyle: bold ? "bold" : "normal" }));
-    const fmtTime = (sec: number) => {
-      const s = Math.max(0, Math.floor(sec || 0));
-      const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
-      return h > 0 ? `${h}時間${m}分` : `${m}分${ss}秒`;
-    };
+    this.statusTab = "status";
+    this.statusTabs = [];
+    this.statusData = undefined;
+    this.statusErr = undefined;
 
     // 背景＋パネル
-    add(this.add.rectangle(cx, height / 2, width, height, 0x000000, 0.85).setInteractive());
-    const pw = Math.min(1120, width - 80), ph = Math.min(700, height - 80);
+    layer.add(this.add.rectangle(cx, height / 2, width, height, 0x000000, 0.85).setInteractive());
+    const pw = Math.min(1120, width - 80), ph = Math.min(720, height - 70);
     const px = cx - pw / 2, py = (height - ph) / 2;
-    add(this.add.rectangle(cx, py + ph / 2, pw, ph, 0x161122, 0.98).setStrokeStyle(2, 0x6b5a8f));
-    txt(cx, py + 22, "ステータス", 26, "#e8c87e", true).setOrigin(0.5);
-    const close = txt(px + pw - 18, py + 18, "✕ 閉じる (C)", 15, "#cccccc").setOrigin(1, 0).setInteractive({ useHandCursor: true });
+    this.statusPanel = { px, py, pw, ph };
+    layer.add(this.add.rectangle(cx, py + ph / 2, pw, ph, 0x161122, 0.98).setStrokeStyle(2, 0x6b5a8f));
+    const close = this.add.text(px + pw - 18, py + 14, "✕ 閉じる (C)", { fontSize: "15px", color: "#cccccc" })
+      .setOrigin(1, 0).setInteractive({ useHandCursor: true });
     close.on("pointerover", () => close.setColor("#ffffff"));
     close.on("pointerout", () => close.setColor("#cccccc"));
     close.on("pointerdown", () => this.closeStatus());
+    layer.add(close);
 
-    // レイアウト基準
-    const colLX = px + 40, colRX = px + pw * 0.54;
-    const colW = pw * 0.40;
-    const header = (x: number, y: number, label: string) => {
-      txt(x, y, label, 17, "#7ee787", true);
-      add(this.add.rectangle(x, y + 26, colW, 2, 0x4a4360).setOrigin(0, 0.5));
-    };
-    const bar = (x: number, y: number, w: number, frac: number, color: number) => {
-      add(this.add.rectangle(x, y, w, 12, 0x2a2440).setOrigin(0, 0.5));
-      add(this.add.rectangle(x, y, Math.max(0, Math.min(1, frac)) * w, 12, color).setOrigin(0, 0.5));
-    };
-
-    const me: any = (this.room.state as any).players.get(this.myId);
-    const top = py + 62;
-
-    // === 左：キャラクター＋RPG ===
-    header(colLX, top, "▸ キャラクター");
-    const portrait = add(this.add.sprite(colLX + 44, top + 96, CHAR_INITIAL_TEX).setOrigin(0.5));
-    applyCharPose(portrait, "front", "idle", false, 100);
-    txt(colLX + 104, top + 50, me?.name ?? loadPlayerName(), 20, "#ffffff", true);
-    txt(colLX + 104, top + 82, `Lv. ${me?.level ?? 1}`, 16, "#ffe066", true);
-    if (me) {
-      txt(colLX + 104, top + 110, `HP  ${Math.round(me.hp)} / ${me.maxHp}`, 13, "#ff9a9a");
-      bar(colLX + 104, top + 132, colW - 110, me.maxHp ? me.hp / me.maxHp : 0, 0xe04545);
-      txt(colLX + 104, top + 150, `EXP  ${me.exp} / ${me.nextExp}`, 13, "#9ab8ff");
-      bar(colLX + 104, top + 172, colW - 110, me.nextExp ? me.exp / me.nextExp : 0, 0x66aaff);
+    // タブバー（クリック / 数字キー1〜4）
+    const tabs: Array<["status" | "items" | "equip" | "other", string]> = [
+      ["status", "ステータス"], ["items", "アイテム"], ["equip", "装備"], ["other", "その他"],
+    ];
+    const tabW = 148, tabH = 34, gap = 6;
+    const totalW = tabs.length * tabW + (tabs.length - 1) * gap;
+    let tabX = cx - totalW / 2;
+    const tabY = py + 18;
+    for (const [key, label] of tabs) {
+      const bg = this.add.rectangle(tabX, tabY, tabW, tabH, 0x241c38).setOrigin(0, 0)
+        .setStrokeStyle(1, 0x4a4360).setInteractive({ useHandCursor: true });
+      const t = this.add.text(tabX + tabW / 2, tabY + tabH / 2, label, { fontSize: "15px", color: "#bdb6d0" }).setOrigin(0.5);
+      bg.on("pointerdown", () => this.setStatusTab(key));
+      layer.add([bg, t]);
+      this.statusTabs.push({ key, bg, label: t });
+      tabX += tabW + gap;
     }
-    // ステータス行（ラベル左・値右）
-    const statY = top + 214;
-    const rows: Array<[string, string]> = me
-      ? [["攻撃力", `${me.atk}`], ["討伐数", `${me.kills ?? 0}`], ["プレイ時間", fmtTime(me.playSec)]]
-      : [["", "（世界に入ると表示）"]];
-    rows.forEach((r, i) => {
-      txt(colLX, statY + i * 30, r[0], 15, "#bdb6d0");
-      txt(colLX + colW, statY + i * 30, r[1], 15, "#ffffff", true).setOrigin(1, 0);
-    });
 
-    // === 右：蒐集進捗＋アカウント ===
-    header(colRX, top, "▸ 蒐集進捗");
-    const colSummary = txt(colRX, top + 34, "読み込み中…", 15, "#ece7f5");
-    header(colRX, top + 250, "▸ アカウント");
-    const accText = txt(colRX, top + 286, "読み込み中…", 14, "#ece7f5").setLineSpacing(8);
+    // コンテンツ領域（タブ切替で中身を差し替え）
+    this.statusContent = this.add.container(0, 0);
+    layer.add(this.statusContent);
+    this.drawStatusTab();
 
-    // 達成課題見出し（中身はデータ取得後）
-    const achY = statY + 110;
-    header(colLX, achY, "▸ 達成課題");
-
+    // データ取得（キャッシュ）→ ステータスタブなら再描画
     try {
       const [cards, mine, profile, user] = await Promise.all([
         fetchCards(), fetchMyCards(), getMyProfile(), getUser(),
       ]);
       if (this.statusLayer !== layer) return;
-
-      const created = profile?.created_at ? new Date(profile.created_at).toLocaleDateString("ja-JP") : "-";
-      accText.setText(
-        `表示名 : ${profile?.display_name ?? "-"}\n` +
-        `メール : ${user?.email ?? "(ゲスト)"}\n` +
-        `登録日 : ${created}`
-      );
-
-      const owned = new Map(mine.map((m) => [m.card_id, m.count]));
-      const rar: Record<string, { have: number; total: number }> = {
-        common: { have: 0, total: 0 }, rare: { have: 0, total: 0 }, legend: { have: 0, total: 0 },
-      };
-      let ownedTotal = 0, dup = 0;
-      cards.forEach((c) => {
-        rar[c.rarity].total++;
-        const n = owned.get(c.id) ?? 0;
-        if (n > 0) rar[c.rarity].have++;
-        ownedTotal += n;
-        if (n > 1) dup += n - 1;
-      });
-      const collected = rar.common.have + rar.rare.have + rar.legend.have;
-      colSummary.setText(`蒐集  ${collected} / ${cards.length} 種`).setColor("#ffffff");
-      // レアリティ別の進捗バー
-      (["common", "rare", "legend"] as const).forEach((k, i) => {
-        const meta = RARITY_META[k];
-        const yy = top + 78 + i * 32;
-        txt(colRX, yy - 6, meta.label, 13, meta.colorStr);
-        txt(colRX + colW, yy - 6, `${rar[k].have} / ${rar[k].total}`, 13, "#ffffff").setOrigin(1, 0);
-        bar(colRX, yy + 14, colW, rar[k].total ? rar[k].have / rar[k].total : 0, meta.colorNum);
-      });
-      txt(colRX, top + 182, `所持総数 ${ownedTotal} 枚（重複 ${dup}）`, 13, "#bdb6d0");
-      txt(colRX, top + 204, "一覧は B キーの台帳で", 12, "#6a6285");
-
-      // 達成課題（達成で自動授与）
-      ACHIEVEMENTS.forEach((a, i) => {
-        const cur = a.type === "kills" ? (me?.kills ?? 0)
-          : a.type === "level" ? (me?.level ?? 0)
-            : a.type === "playSec" ? (me?.playSec ?? 0)
-              : collected;
-        const done = cur >= a.need;
-        const prog = a.type === "playSec" ? `${Math.floor(cur / 60)}/${Math.floor(a.need / 60)}分` : `${cur}/${a.need}`;
-        txt(colLX, achY + 32 + i * 20, `${done ? "✓" : "・"} ${a.desc}  ${done ? "" : prog}`, 13, done ? "#7ee787" : "#9b93b0");
-      });
+      this.statusData = { cards, mine, profile, user };
     } catch (e: any) {
-      if (this.statusLayer === layer) colSummary.setText(`読み込み失敗: ${e?.message ?? e}`).setColor("#e08a8a");
+      if (this.statusLayer !== layer) return;
+      this.statusErr = e?.message ?? String(e);
     }
+    if (this.statusTab === "status") this.drawStatusTab();
+  }
+
+  private setStatusTab(key: "status" | "items" | "equip" | "other") {
+    if (!this.statusLayer) return;
+    this.statusTab = key;
+    this.drawStatusTab();
+  }
+
+  // タブのハイライト更新＋コンテンツ再描画
+  private drawStatusTab() {
+    const c = this.statusContent, p = this.statusPanel;
+    if (!c || !p) return;
+    for (const t of this.statusTabs) {
+      const on = t.key === this.statusTab;
+      t.bg.setFillStyle(on ? 0x4a3a78 : 0x241c38);
+      t.label.setColor(on ? "#ffffff" : "#bdb6d0");
+    }
+    c.removeAll(true);
+    if (this.statusTab === "status") this.drawStatusInfo(c, p);
+    else if (this.statusTab === "items") this.drawItemsTab(c, p);
+    else if (this.statusTab === "equip") this.drawEquipTab(c, p);
+    else this.drawOtherTab(c, p);
+  }
+
+  // コンテナへ要素を足すヘルパ群（タブ共通）
+  private sTxt(c: Phaser.GameObjects.Container, x: number, y: number, t: string, size: number, color: string, bold = false) {
+    const o = this.add.text(x, y, t, { fontSize: `${size}px`, color, fontStyle: bold ? "bold" : "normal" });
+    c.add(o); return o;
+  }
+  private sRect(c: Phaser.GameObjects.Container, x: number, y: number, w: number, h: number, color: number, alpha = 1) {
+    const r = this.add.rectangle(x, y, w, h, color, alpha); c.add(r); return r;
+  }
+  // 空スロット枠（アイテム/装備で共通）
+  private slot(c: Phaser.GameObjects.Container, x: number, y: number, s: number, label?: string) {
+    c.add(this.add.rectangle(x, y, s, s, 0x221b34).setStrokeStyle(2, 0x4a4360));
+    if (label) c.add(this.add.text(x, y + s / 2 + 12, label, { fontSize: "12px", color: "#9b93b0" }).setOrigin(0.5));
+  }
+
+  // --- タブ内容 ---
+
+  private drawStatusInfo(c: Phaser.GameObjects.Container, p: { px: number; py: number; pw: number; ph: number }) {
+    const { px, py, pw } = p;
+    const colLX = px + 40, colRX = px + pw * 0.54, colW = pw * 0.40;
+    const top = py + 78;
+    const fmtTime = (sec: number) => {
+      const s = Math.max(0, Math.floor(sec || 0));
+      const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+      return h > 0 ? `${h}時間${m}分` : `${m}分${ss}秒`;
+    };
+    const header = (x: number, y: number, label: string) => {
+      this.sTxt(c, x, y, label, 17, "#7ee787", true);
+      this.sRect(c, x, y + 26, colW, 2, 0x4a4360).setOrigin(0, 0.5);
+    };
+    const bar = (x: number, y: number, w: number, frac: number, color: number) => {
+      this.sRect(c, x, y, w, 12, 0x2a2440).setOrigin(0, 0.5);
+      this.sRect(c, x, y, Math.max(0, Math.min(1, frac)) * w, 12, color).setOrigin(0, 0.5);
+    };
+    const me: any = (this.room.state as any).players.get(this.myId);
+
+    // 左：キャラクター
+    header(colLX, top, "▸ キャラクター");
+    const portrait = this.add.sprite(colLX + 44, top + 96, CHAR_INITIAL_TEX).setOrigin(0.5);
+    applyCharPose(portrait, "front", "idle", false, 100);
+    c.add(portrait);
+    this.sTxt(c, colLX + 104, top + 50, me?.name ?? loadPlayerName(), 20, "#ffffff", true);
+    this.sTxt(c, colLX + 104, top + 82, `Lv. ${me?.level ?? 1}`, 16, "#ffe066", true);
+    if (me) {
+      this.sTxt(c, colLX + 104, top + 110, `HP  ${Math.round(me.hp)} / ${me.maxHp}`, 13, "#ff9a9a");
+      bar(colLX + 104, top + 132, colW - 110, me.maxHp ? me.hp / me.maxHp : 0, 0xe04545);
+      this.sTxt(c, colLX + 104, top + 150, `EXP  ${me.exp} / ${me.nextExp}`, 13, "#9ab8ff");
+      bar(colLX + 104, top + 172, colW - 110, me.nextExp ? me.exp / me.nextExp : 0, 0x66aaff);
+    }
+    const statY = top + 214;
+    const rows: Array<[string, string]> = me
+      ? [["攻撃力", `${me.atk}`], ["討伐数", `${me.kills ?? 0}`], ["プレイ時間", fmtTime(me.playSec)]]
+      : [["", "（世界に入ると表示）"]];
+    rows.forEach((r, i) => {
+      this.sTxt(c, colLX, statY + i * 30, r[0], 15, "#bdb6d0");
+      this.sTxt(c, colLX + colW, statY + i * 30, r[1], 15, "#ffffff", true).setOrigin(1, 0);
+    });
+    const achY = statY + 110;
+    header(colLX, achY, "▸ 達成課題");
+
+    // 右：蒐集進捗＋アカウント
+    header(colRX, top, "▸ 蒐集進捗");
+    header(colRX, top + 250, "▸ アカウント");
+
+    const data = this.statusData;
+    if (this.statusErr) {
+      this.sTxt(c, colRX, top + 34, `読み込み失敗: ${this.statusErr}`, 14, "#e08a8a");
+      return;
+    }
+    if (!data) { this.sTxt(c, colRX, top + 34, "読み込み中…", 15, "#ece7f5"); return; }
+
+    const { cards, mine, profile, user } = data;
+    const created = profile?.created_at ? new Date(profile.created_at).toLocaleDateString("ja-JP") : "-";
+    this.sTxt(c, colRX, top + 286, `表示名 : ${profile?.display_name ?? "-"}\nメール : ${user?.email ?? "(ゲスト)"}\n登録日 : ${created}`, 14, "#ece7f5").setLineSpacing(8);
+
+    const owned = new Map(mine.map((m: any) => [m.card_id, m.count]));
+    const rar: Record<string, { have: number; total: number }> = {
+      common: { have: 0, total: 0 }, rare: { have: 0, total: 0 }, legend: { have: 0, total: 0 },
+    };
+    let ownedTotal = 0, dup = 0;
+    cards.forEach((cd: any) => {
+      rar[cd.rarity].total++;
+      const n = (owned.get(cd.id) as number) ?? 0;
+      if (n > 0) rar[cd.rarity].have++;
+      ownedTotal += n; if (n > 1) dup += n - 1;
+    });
+    const collected = rar.common.have + rar.rare.have + rar.legend.have;
+    this.sTxt(c, colRX, top + 34, `蒐集  ${collected} / ${cards.length} 種`, 15, "#ffffff", true);
+    (["common", "rare", "legend"] as const).forEach((k, i) => {
+      const meta = RARITY_META[k];
+      const yy = top + 78 + i * 32;
+      this.sTxt(c, colRX, yy - 6, meta.label, 13, meta.colorStr);
+      this.sTxt(c, colRX + colW, yy - 6, `${rar[k].have} / ${rar[k].total}`, 13, "#ffffff").setOrigin(1, 0);
+      bar(colRX, yy + 14, colW, rar[k].total ? rar[k].have / rar[k].total : 0, meta.colorNum);
+    });
+    this.sTxt(c, colRX, top + 182, `所持総数 ${ownedTotal} 枚（重複 ${dup}）`, 13, "#bdb6d0");
+    this.sTxt(c, colRX, top + 204, "一覧は B キーの台帳で", 12, "#6a6285");
+
+    ACHIEVEMENTS.forEach((a, i) => {
+      const cur = a.type === "kills" ? (me?.kills ?? 0)
+        : a.type === "level" ? (me?.level ?? 0)
+          : a.type === "playSec" ? (me?.playSec ?? 0)
+            : collected;
+      const done = cur >= a.need;
+      const prog = a.type === "playSec" ? `${Math.floor(cur / 60)}/${Math.floor(a.need / 60)}分` : `${cur}/${a.need}`;
+      this.sTxt(c, colLX, achY + 32 + i * 20, `${done ? "✓" : "・"} ${a.desc}  ${done ? "" : prog}`, 13, done ? "#7ee787" : "#9b93b0");
+    });
+  }
+
+  private drawItemsTab(c: Phaser.GameObjects.Container, p: { px: number; py: number; pw: number; ph: number }) {
+    const { px, py, pw } = p;
+    const x0 = px + 40, top = py + 78;
+    this.sTxt(c, x0, top, "▸ アイテム", 17, "#7ee787", true);
+    this.sRect(c, x0, top + 26, pw - 80, 2, 0x4a4360).setOrigin(0, 0.5);
+    this.sTxt(c, x0, top + 36, "回復・バフなどの所持アイテム（今後実装）", 13, "#9b93b0");
+    // 空スロットのグリッド
+    const cols = 8, rows = 4, s = 66, gap = 14;
+    const gx = x0 + s / 2, gy = top + 96 + s / 2;
+    for (let r = 0; r < rows; r++) {
+      for (let col = 0; col < cols; col++) {
+        this.slot(c, gx + col * (s + gap), gy + r * (s + gap), s);
+      }
+    }
+  }
+
+  private drawEquipTab(c: Phaser.GameObjects.Container, p: { px: number; py: number; pw: number; ph: number }) {
+    const { px, py, pw } = p;
+    const x0 = px + 40, top = py + 78;
+    this.sTxt(c, x0, top, "▸ 装備", 17, "#7ee787", true);
+    this.sRect(c, x0, top + 26, pw - 80, 2, 0x4a4360).setOrigin(0, 0.5);
+    this.sTxt(c, x0, top + 36, "武器・防具・装飾を装備（今後実装）", 13, "#9b93b0");
+    // 装備スロット（ラベル付き枠）を2行で配置
+    const slots = ["武器", "盾", "頭", "鎧", "護符", "指輪"];
+    const cols = 3, s = 92, gapX = 60, gapY = 56;
+    const gx = x0 + s / 2 + 20, gy = top + 110 + s / 2;
+    slots.forEach((label, i) => {
+      const col = i % cols, row = Math.floor(i / cols);
+      this.slot(c, gx + col * (s + gapX), gy + row * (s + gapY), s, label);
+    });
+  }
+
+  private drawOtherTab(c: Phaser.GameObjects.Container, p: { px: number; py: number; pw: number; ph: number }) {
+    const { px, py, pw } = p;
+    const x0 = px + 40, top = py + 78;
+    this.sTxt(c, x0, top, "▸ その他", 17, "#7ee787", true);
+    this.sRect(c, x0, top + 26, pw - 80, 2, 0x4a4360).setOrigin(0, 0.5);
+    const items = ["称号（今後実装）", "ランキング（今後実装）", "設定（今後実装）"];
+    items.forEach((t, i) => this.sTxt(c, x0, top + 50 + i * 30, `・ ${t}`, 14, "#9b93b0"));
   }
 
   // --- 台帳パネル（Bキーで開閉。世界内で自分のコレクションを見る）---
