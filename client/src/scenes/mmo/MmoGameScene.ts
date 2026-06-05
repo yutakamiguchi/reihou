@@ -878,19 +878,29 @@ export class MmoGameScene extends Phaser.Scene {
   }
 
   private drawItemsTab(c: Phaser.GameObjects.Container, p: { px: number; py: number; pw: number; ph: number }) {
-    const { px, py, pw } = p;
-    const x0 = px + 40, top = py + 78;
+    const { px, py, pw, ph } = p;
+    const x0 = px + 40, top = py + 78, listW = pw - 80;
     this.sTxt(c, x0, top, "▸ アイテム", 17, "#7ee787", true);
-    this.sRect(c, x0, top + 26, pw - 80, 2, 0x4a4360).setOrigin(0, 0.5);
+    this.sRect(c, x0, top + 26, listW, 2, 0x4a4360).setOrigin(0, 0.5);
     this.sTxt(c, x0, top + 36, "回復・バフなどの所持アイテム（今後実装）", 13, "#9b93b0");
-    // 空スロットのグリッド
-    const cols = 8, rows = 4, s = 66, gap = 14;
-    const gx = x0 + s / 2, gy = top + 96 + s / 2;
-    for (let r = 0; r < rows; r++) {
-      for (let col = 0; col < cols; col++) {
-        this.slot(c, gx + col * (s + gap), gy + r * (s + gap), s);
-      }
+
+    // リスト枠
+    const listY = top + 62;
+    const listH = ph - (listY - py) - 40;
+    this.sRect(c, x0, listY, listW, listH, 0x120e1e).setOrigin(0, 0).setStrokeStyle(1, 0x3a3550);
+    // 見出し行（名称 / 効果 / 個数）
+    const rowH = 38, pad = 16;
+    this.sRect(c, x0, listY, listW, rowH, 0x241c38).setOrigin(0, 0);
+    this.sTxt(c, x0 + pad, listY + 11, "アイテム", 13, "#bdb6d0", true);
+    this.sTxt(c, x0 + listW * 0.42, listY + 11, "効果", 13, "#bdb6d0", true);
+    this.sTxt(c, x0 + listW - pad, listY + 11, "個数", 13, "#bdb6d0", true).setOrigin(1, 0);
+    // 空行の区切り（リストらしさ）
+    const rowsN = Math.max(1, Math.floor((listH - rowH) / rowH));
+    for (let i = 1; i <= rowsN; i++) {
+      this.sRect(c, x0, listY + rowH * i, listW, 1, 0x2a2440).setOrigin(0, 0.5);
     }
+    // 中央メッセージ
+    this.sTxt(c, x0 + listW / 2, listY + rowH + (listH - rowH) / 2, "所持しているアイテムはありません", 14, "#6a6285").setOrigin(0.5);
   }
 
   private drawEquipTab(c: Phaser.GameObjects.Container, p: { px: number; py: number; pw: number; ph: number }) {
