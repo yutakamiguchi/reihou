@@ -48,17 +48,17 @@ interface MobKindDef {
   expMul: number; drop: number; rareBias: number;
 }
 const MOB_KINDS: Record<string, MobKindDef> = {
-  grunt:    { name: "迷い霊",   maxHp: 50,  atk: 7,  speed: 62,  expMul: 1.0, drop: 0.16, rareBias: 0 },
-  swift:    { name: "妖蝙蝠",   maxHp: 30,  atk: 6,  speed: 104, expMul: 1.2, drop: 0.16, rareBias: 0 },
-  tank:     { name: "岩石巨人", maxHp: 150, atk: 12, speed: 38,  expMul: 2.2, drop: 0.40, rareBias: 0.5 },
-  brute:    { name: "紅蓮鬼",   maxHp: 95,  atk: 16, speed: 58,  expMul: 1.8, drop: 0.28, rareBias: 0.3 },
+  grunt:    { name: "迷い霊",   maxHp: 50,  atk: 7,  speed: 62,  expMul: 1.0, drop: 0.08, rareBias: 0 },
+  swift:    { name: "妖蝙蝠",   maxHp: 30,  atk: 6,  speed: 104, expMul: 1.2, drop: 0.08, rareBias: 0 },
+  tank:     { name: "岩石巨人", maxHp: 150, atk: 12, speed: 38,  expMul: 2.2, drop: 0.22, rareBias: 0.5 },
+  brute:    { name: "紅蓮鬼",   maxHp: 95,  atk: 16, speed: 58,  expMul: 1.8, drop: 0.14, rareBias: 0.3 },
   // 追加5種
-  slime:    { name: "泥スライム", maxHp: 36, atk: 6,  speed: 50,  expMul: 0.9, drop: 0.15, rareBias: 0 },
-  spider:   { name: "毒蜘蛛",   maxHp: 55,  atk: 10, speed: 90,  expMul: 1.4, drop: 0.20, rareBias: 0.1 },
-  skeleton: { name: "骸骨剣士", maxHp: 82,  atk: 13, speed: 60,  expMul: 1.6, drop: 0.24, rareBias: 0.2 },
-  scorpion: { name: "砂蠍",     maxHp: 120, atk: 14, speed: 46,  expMul: 2.0, drop: 0.36, rareBias: 0.4 },
-  serpent:  { name: "大蛇",     maxHp: 100, atk: 17, speed: 84,  expMul: 2.0, drop: 0.32, rareBias: 0.35 },
-  boss:     { name: "災厄の主", maxHp: 480, atk: 24, speed: 48,  expMul: 6.0, drop: 0.80, rareBias: 1.0 },
+  slime:    { name: "泥スライム", maxHp: 36, atk: 6,  speed: 50,  expMul: 0.9, drop: 0.07, rareBias: 0 },
+  spider:   { name: "毒蜘蛛",   maxHp: 55,  atk: 10, speed: 90,  expMul: 1.4, drop: 0.10, rareBias: 0.1 },
+  skeleton: { name: "骸骨剣士", maxHp: 82,  atk: 13, speed: 60,  expMul: 1.6, drop: 0.12, rareBias: 0.2 },
+  scorpion: { name: "砂蠍",     maxHp: 120, atk: 14, speed: 46,  expMul: 2.0, drop: 0.18, rareBias: 0.4 },
+  serpent:  { name: "大蛇",     maxHp: 100, atk: 17, speed: 84,  expMul: 2.0, drop: 0.16, rareBias: 0.35 },
+  boss:     { name: "災厄の主", maxHp: 480, atk: 24, speed: 48,  expMul: 6.0, drop: 0.50, rareBias: 1.0 },
 };
 // 出現率（弱いほど多い）。ボスは別枠。
 const MOB_SPAWN_WEIGHTS: Array<[string, number]> = [
