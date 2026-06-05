@@ -677,48 +677,78 @@ export class MmoGameScene extends Phaser.Scene {
   private async openStatus() {
     this.closeBinder(); // 同時には開かない
     const { width, height } = this.scale;
+    const cx = width / 2;
     this.statusLayer?.destroy();
     const layer = this.add.container(0, 0).setScrollFactor(0).setDepth(7000);
     this.uiLayer.add(layer);
     this.statusLayer = layer;
-    const T = (x: number, y: number, t: string, size: number, color: string, bold = false) => {
-      const o = this.add.text(x, y, t, { fontSize: `${size}px`, color, fontStyle: bold ? "bold" : "normal" });
-      layer.add(o); return o;
+
+    const add = <T extends Phaser.GameObjects.GameObject>(o: T): T => { layer.add(o); return o; };
+    const txt = (x: number, y: number, t: string, size: number, color: string, bold = false) =>
+      add(this.add.text(x, y, t, { fontSize: `${size}px`, color, fontStyle: bold ? "bold" : "normal" }));
+    const fmtTime = (sec: number) => {
+      const s = Math.max(0, Math.floor(sec || 0));
+      const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+      return h > 0 ? `${h}時間${m}分` : `${m}分${ss}秒`;
     };
 
-    layer.add(this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.8).setInteractive());
-    T(width / 2, 34, "ステータス", 30, "#e8c87e", true).setOrigin(0.5);
-    const close = T(width - 30, 30, "✕ 閉じる (C)", 16, "#cccccc").setOrigin(1, 0).setInteractive({ useHandCursor: true });
-    close.on("pointerover", () => close.setColor("#fff"));
+    // 背景＋パネル
+    add(this.add.rectangle(cx, height / 2, width, height, 0x000000, 0.85).setInteractive());
+    const pw = Math.min(1120, width - 80), ph = Math.min(700, height - 80);
+    const px = cx - pw / 2, py = (height - ph) / 2;
+    add(this.add.rectangle(cx, py + ph / 2, pw, ph, 0x161122, 0.98).setStrokeStyle(2, 0x6b5a8f));
+    txt(cx, py + 22, "ステータス", 26, "#e8c87e", true).setOrigin(0.5);
+    const close = txt(px + pw - 18, py + 18, "✕ 閉じる (C)", 15, "#cccccc").setOrigin(1, 0).setInteractive({ useHandCursor: true });
+    close.on("pointerover", () => close.setColor("#ffffff"));
     close.on("pointerout", () => close.setColor("#cccccc"));
     close.on("pointerdown", () => this.closeStatus());
 
-    // RPGステータス（state からライブ取得）
+    // レイアウト基準
+    const colLX = px + 40, colRX = px + pw * 0.54;
+    const colW = pw * 0.40;
+    const header = (x: number, y: number, label: string) => {
+      txt(x, y, label, 17, "#7ee787", true);
+      add(this.add.rectangle(x, y + 26, colW, 2, 0x4a4360).setOrigin(0, 0.5));
+    };
+    const bar = (x: number, y: number, w: number, frac: number, color: number) => {
+      add(this.add.rectangle(x, y, w, 12, 0x2a2440).setOrigin(0, 0.5));
+      add(this.add.rectangle(x, y, Math.max(0, Math.min(1, frac)) * w, 12, color).setOrigin(0, 0.5));
+    };
+
     const me: any = (this.room.state as any).players.get(this.myId);
-    const leftX = width / 2 - 300, rightX = width / 2 + 30;
+    const top = py + 62;
 
-    T(leftX, 100, "▸ アカウント", 18, "#7ee787", true);
-    const acc = T(leftX, 132, "読み込み中…", 16, "#ece7f5");
-
-    T(leftX, 250, "▸ RPGステータス", 18, "#7ee787", true);
+    // === 左：キャラクター＋RPG ===
+    header(colLX, top, "▸ キャラクター");
+    const portrait = add(this.add.sprite(colLX + 44, top + 96, CHAR_INITIAL_TEX).setOrigin(0.5));
+    applyCharPose(portrait, "front", "idle", false, 100);
+    txt(colLX + 104, top + 50, me?.name ?? loadPlayerName(), 20, "#ffffff", true);
+    txt(colLX + 104, top + 82, `Lv. ${me?.level ?? 1}`, 16, "#ffe066", true);
     if (me) {
-      const fmtTime = (sec: number) => {
-        const s = Math.max(0, Math.floor(sec || 0));
-        const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
-        return h > 0 ? `${h}時間${m}分` : `${m}分${ss}秒`;
-      };
-      T(leftX, 282, `レベル    ${me.level}`, 16, "#ece7f5");
-      T(leftX, 308, `EXP      ${me.exp} / ${me.nextExp}`, 16, "#ece7f5");
-      T(leftX, 334, `HP       ${me.hp} / ${me.maxHp}`, 16, "#ece7f5");
-      T(leftX, 360, `ATK      ${me.atk}`, 16, "#ece7f5");
-      T(leftX, 386, `討伐数    ${me.kills ?? 0}`, 16, "#ece7f5");
-      T(leftX, 412, `プレイ時間 ${fmtTime(me.playSec)}`, 16, "#ece7f5");
-    } else {
-      T(leftX, 282, "（世界に入ると表示）", 14, "#9b93b0");
+      txt(colLX + 104, top + 110, `HP  ${Math.round(me.hp)} / ${me.maxHp}`, 13, "#ff9a9a");
+      bar(colLX + 104, top + 132, colW - 110, me.maxHp ? me.hp / me.maxHp : 0, 0xe04545);
+      txt(colLX + 104, top + 150, `EXP  ${me.exp} / ${me.nextExp}`, 13, "#9ab8ff");
+      bar(colLX + 104, top + 172, colW - 110, me.nextExp ? me.exp / me.nextExp : 0, 0x66aaff);
     }
+    // ステータス行（ラベル左・値右）
+    const statY = top + 214;
+    const rows: Array<[string, string]> = me
+      ? [["攻撃力", `${me.atk}`], ["討伐数", `${me.kills ?? 0}`], ["プレイ時間", fmtTime(me.playSec)]]
+      : [["", "（世界に入ると表示）"]];
+    rows.forEach((r, i) => {
+      txt(colLX, statY + i * 30, r[0], 15, "#bdb6d0");
+      txt(colLX + colW, statY + i * 30, r[1], 15, "#ffffff", true).setOrigin(1, 0);
+    });
 
-    T(rightX, 100, "▸ 蒐集進捗", 18, "#7ee787", true);
-    const col = T(rightX, 132, "読み込み中…", 16, "#ece7f5");
+    // === 右：蒐集進捗＋アカウント ===
+    header(colRX, top, "▸ 蒐集進捗");
+    const colSummary = txt(colRX, top + 34, "読み込み中…", 15, "#ece7f5");
+    header(colRX, top + 250, "▸ アカウント");
+    const accText = txt(colRX, top + 286, "読み込み中…", 14, "#ece7f5").setLineSpacing(8);
+
+    // 達成課題見出し（中身はデータ取得後）
+    const achY = statY + 110;
+    header(colLX, achY, "▸ 達成課題");
 
     try {
       const [cards, mine, profile, user] = await Promise.all([
@@ -727,11 +757,11 @@ export class MmoGameScene extends Phaser.Scene {
       if (this.statusLayer !== layer) return;
 
       const created = profile?.created_at ? new Date(profile.created_at).toLocaleDateString("ja-JP") : "-";
-      acc.setText(
+      accText.setText(
         `表示名 : ${profile?.display_name ?? "-"}\n` +
         `メール : ${user?.email ?? "(ゲスト)"}\n` +
         `登録日 : ${created}`
-      ).setLineSpacing(8);
+      );
 
       const owned = new Map(mine.map((m) => [m.card_id, m.count]));
       const rar: Record<string, { have: number; total: number }> = {
@@ -746,32 +776,30 @@ export class MmoGameScene extends Phaser.Scene {
         if (n > 1) dup += n - 1;
       });
       const collected = rar.common.have + rar.rare.have + rar.legend.have;
-      const total = cards.length;
-      col.setText(
-        `蒐集     ${collected} / ${total} 種\n\n` +
-        `${RARITY_META.common.label}   ${rar.common.have} / ${rar.common.total}\n` +
-        `${RARITY_META.rare.label}   ${rar.rare.have} / ${rar.rare.total}\n` +
-        `${RARITY_META.legend.label}   ${rar.legend.have} / ${rar.legend.total}\n\n` +
-        `所持総数 ${ownedTotal} 枚（重複 ${dup}）\n\n` +
-        `（一覧は B キーの台帳で）`
-      ).setLineSpacing(8);
+      colSummary.setText(`蒐集  ${collected} / ${cards.length} 種`).setColor("#ffffff");
+      // レアリティ別の進捗バー
+      (["common", "rare", "legend"] as const).forEach((k, i) => {
+        const meta = RARITY_META[k];
+        const yy = top + 78 + i * 32;
+        txt(colRX, yy - 6, meta.label, 13, meta.colorStr);
+        txt(colRX + colW, yy - 6, `${rar[k].have} / ${rar[k].total}`, 13, "#ffffff").setOrigin(1, 0);
+        bar(colRX, yy + 14, colW, rar[k].total ? rar[k].have / rar[k].total : 0, meta.colorNum);
+      });
+      txt(colRX, top + 182, `所持総数 ${ownedTotal} 枚（重複 ${dup}）`, 13, "#bdb6d0");
+      txt(colRX, top + 204, "一覧は B キーの台帳で", 12, "#6a6285");
 
-      // 達成課題（左下）。条件を満たすと自動で霊宝が授与される。
-      T(leftX, 440, "▸ 達成課題", 18, "#7ee787", true);
+      // 達成課題（達成で自動授与）
       ACHIEVEMENTS.forEach((a, i) => {
         const cur = a.type === "kills" ? (me?.kills ?? 0)
           : a.type === "level" ? (me?.level ?? 0)
-          : a.type === "playSec" ? (me?.playSec ?? 0)
-          : collected;
+            : a.type === "playSec" ? (me?.playSec ?? 0)
+              : collected;
         const done = cur >= a.need;
-        const prog = a.type === "playSec"
-          ? `${Math.floor(cur / 60)}/${Math.floor(a.need / 60)}分`
-          : `${cur}/${a.need}`;
-        T(leftX, 466 + i * 19, `${done ? "✓" : "・"} ${a.desc}  ${done ? "" : prog}`,
-          14, done ? "#7ee787" : "#9b93b0");
+        const prog = a.type === "playSec" ? `${Math.floor(cur / 60)}/${Math.floor(a.need / 60)}分` : `${cur}/${a.need}`;
+        txt(colLX, achY + 32 + i * 20, `${done ? "✓" : "・"} ${a.desc}  ${done ? "" : prog}`, 13, done ? "#7ee787" : "#9b93b0");
       });
     } catch (e: any) {
-      if (this.statusLayer === layer) col.setText(`読み込み失敗: ${e?.message ?? e}`).setColor("#e08a8a");
+      if (this.statusLayer === layer) colSummary.setText(`読み込み失敗: ${e?.message ?? e}`).setColor("#e08a8a");
     }
   }
 
