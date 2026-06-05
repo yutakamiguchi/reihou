@@ -95,6 +95,35 @@ const RELIC_TARGET = 6;            // フィールドに常時湧かせる霊宝
 const RELIC_PICKUP_RANGE = 30;     // 拾得判定の距離
 const RELIC_SPAWN_COOLDOWN_MS = 4000;
 
+// --- アイテム ---
+// kind: heal=HP回復 / buffAtk=攻撃倍率 / buffSpeed=移動速度倍率（バフは durationMs 間）
+interface ItemDef {
+  id: string; name: string; kind: "heal" | "buffAtk" | "buffSpeed";
+  value: number;        // heal=回復量 / buff=倍率
+  durationMs?: number;  // バフの持続
+  price?: number;       // ショップ価格（回復系）
+  dropWeight?: number;  // mobドロップの重み（バフ系）
+}
+const ITEMS: Record<string, ItemDef> = {
+  potion_s:   { id: "potion_s",   name: "回復薬",     kind: "heal",      value: 60,  price: 30 },
+  potion_l:   { id: "potion_l",   name: "上級回復薬", kind: "heal",      value: 180, price: 80 },
+  elixir_atk: { id: "elixir_atk", name: "力の薬",     kind: "buffAtk",   value: 1.5, durationMs: 30000, dropWeight: 1 },
+  elixir_spd: { id: "elixir_spd", name: "俊足の薬",   kind: "buffSpeed", value: 1.4, durationMs: 30000, dropWeight: 1 },
+};
+const BUFF_DROP_CHANCE = 0.06; // 討伐時にバフ薬が落ちる確率
+const ATK_BUFF_MUL = ITEMS.elixir_atk.value;
+const SPEED_BUFF_MUL = ITEMS.elixir_spd.value;
+// ドロップ対象（バフ系）を重み付き抽選
+const DROP_ITEMS: Array<[string, number]> = Object.values(ITEMS)
+  .filter((it) => it.dropWeight && it.dropWeight > 0)
+  .map((it) => [it.id, it.dropWeight as number]);
+function pickDropItem(): string {
+  const total = DROP_ITEMS.reduce((s, [, w]) => s + w, 0);
+  let r = Math.random() * total;
+  for (const [id, w] of DROP_ITEMS) { r -= w; if (r <= 0) return id; }
+  return DROP_ITEMS[0]?.[0] ?? "elixir_atk";
+}
+
 interface InputState {
   up: boolean; down: boolean; left: boolean; right: boolean;
   attackQueued: boolean; lastAttackAt: number;
@@ -169,6 +198,11 @@ export class MmoRoom extends Room<MmoState> {
       input.lastAttackAt = now;
     });
 
+    // アイテム使用（サーバー権威）
+    this.onMessage("useItem", (client, message: { id?: string }) => {
+      this.useItem(client.sessionId, message?.id ?? "");
+    });
+
     this.setSimulationInterval((dt) => this.update(dt), 1000 / TICK_RATE);
     this.lastTick = Date.now();
   }
@@ -218,6 +252,12 @@ export class MmoRoom extends Room<MmoState> {
         p.kills = typeof s.kills === "number" ? s.kills : 0;
         basePlaySec = typeof s.playSec === "number" ? s.playSec : 0;
         claimed = Array.isArray(s.claimed) ? s.claimed : [];
+        p.gold = typeof s.gold === "number" ? s.gold : 0;
+        if (s.items && typeof s.items === "object") {
+          for (const [k, v] of Object.entries(s.items)) {
+            if (ITEMS[k] && typeof v === "number" && v > 0) p.items.set(k, v);
+          }
+        }
       }
     }
     p.playSec = Math.floor(basePlaySec);
@@ -252,6 +292,7 @@ export class MmoRoom extends Room<MmoState> {
     void saveGameStats(pid, SPIRIT_GAME_KEY, {
       level: p.level, exp: p.exp, kills: p.kills, playSec: p.playSec,
       claimed: rt ? [...rt.claimed] : [],
+      gold: p.gold, items: Object.fromEntries(p.items.entries()),
     });
   }
 
@@ -461,8 +502,9 @@ export class MmoRoom extends Room<MmoState> {
       if (input.right) dx += 1;
       const len = Math.hypot(dx, dy);
       if (len > 0) { dx /= len; dy /= len; p.dir = Math.atan2(dy, dx); }
-      p.vx = dx * PLAYER_SPEED;
-      p.vy = dy * PLAYER_SPEED;
+      const spd = PLAYER_SPEED * (now < p.buffSpeedUntil ? SPEED_BUFF_MUL : 1); // 俊足の薬バフ
+      p.vx = dx * spd;
+      p.vy = dy * spd;
       this.moveEntity(p, dt);
 
       if (input.attackQueued) {
@@ -628,7 +670,8 @@ export class MmoRoom extends Room<MmoState> {
     if (!bestId) return;
     const mob = this.state.mobs.get(bestId)!;
     const now = Date.now();
-    mob.hp -= attacker.atk;
+    const atk = attacker.atk * (now < attacker.buffAtkUntil ? ATK_BUFF_MUL : 1); // 力の薬バフ
+    mob.hp -= atk;
     mob.hitUntil = now + 150;
     if (mob.hp <= 0) this.onMobKilled(attacker, bestId, mob);
   }
@@ -636,6 +679,14 @@ export class MmoRoom extends Room<MmoState> {
   private onMobKilled(attacker: MmoPlayer, mobId: string, mob: Mob) {
     attacker.kills += 1; // 討伐数（表示用・ログイン者は永続）
     const def = MOB_KINDS[mob.kind] ?? MOB_KINDS.grunt;
+    // ゴールド獲得（強敵・深層ほど多い）
+    attacker.gold += Math.max(1, Math.round((2 + this.floor * 2) * def.expMul));
+    // バフ薬ドロップ（霊宝とは別枠）
+    if (Math.random() < BUFF_DROP_CHANCE) {
+      const itemId = pickDropItem();
+      this.addItem(attacker, itemId);
+      this.clients.find((c) => c.sessionId === attacker.id)?.send("itemFound", { id: itemId });
+    }
     // EXP 付与（種別倍率）
     const gain = Math.round((5 + mob.level * 3) * def.expMul);
     const oldLevel = attacker.level;
@@ -663,6 +714,30 @@ export class MmoRoom extends Room<MmoState> {
   private tryRelicDrop(attacker: MmoPlayer, def: MobKindDef) {
     if (Math.random() >= def.drop) return;
     this.grantRelic(attacker, Math.min(1, def.rareBias + this.floorRareBias)); // 深い階ほどレア寄り
+  }
+
+  private addItem(p: MmoPlayer, id: string, n = 1) {
+    p.items.set(id, (p.items.get(id) ?? 0) + n);
+  }
+
+  // アイテム使用（サーバー権威）。回復はHP回復、バフは一定時間有効化。
+  private useItem(sid: string, id: string) {
+    const p = this.state.players.get(sid);
+    const def = ITEMS[id];
+    if (!p || p.dead || !def) return;
+    if ((p.items.get(id) ?? 0) <= 0) return;
+    const now = Date.now();
+    if (def.kind === "heal") {
+      if (p.hp >= p.maxHp) return; // 満タンなら消費しない
+      p.hp = Math.min(p.maxHp, p.hp + def.value);
+    } else if (def.kind === "buffAtk") {
+      p.buffAtkUntil = now + (def.durationMs ?? 0);
+    } else if (def.kind === "buffSpeed") {
+      p.buffSpeedUntil = now + (def.durationMs ?? 0);
+    }
+    const left = (p.items.get(id) ?? 0) - 1;
+    if (left <= 0) p.items.delete(id); else p.items.set(id, left);
+    this.persistStats(p);
   }
 
   // 在庫から霊宝を1枚そのプレイヤーの所有へ払い出し、本人に通知する。

@@ -9,6 +9,7 @@ import { addMoveKeys } from "../../ui/inputKeys";
 import { makeInput } from "../../ui/nameInput";
 import { fetchCards, fetchMyCards, type Card } from "../../spirit";
 import { CARD_ICON, CARD_DESC, RARITY_META, RELIC_IMAGE_NAMES, relicTexKey } from "../spirit/cards-meta";
+import { ITEM_META, ITEM_ORDER, SPEED_BUFF_MUL } from "../spirit/items-meta";
 import { ACHIEVEMENTS } from "../spirit/achievements";
 import { getMyProfile, getUser } from "../../auth";
 import { joinPublicRoom } from "../../net";
@@ -119,6 +120,7 @@ export class MmoGameScene extends Phaser.Scene {
   private expBarBg!: Phaser.GameObjects.Rectangle;
   private expBarFg!: Phaser.GameObjects.Rectangle;
   private hudText!: Phaser.GameObjects.Text;
+  private hudExtra!: Phaser.GameObjects.Text; // ゴールド＋バフ残り（HUD下）
   private deadText!: Phaser.GameObjects.Text;
 
   private keys!: {
@@ -331,10 +333,13 @@ export class MmoGameScene extends Phaser.Scene {
       fontSize: "40px", color: "#ff6666", fontStyle: "bold", stroke: "#000", strokeThickness: 5,
     }).setOrigin(0.5).setScrollFactor(0).setDepth(2000).setVisible(false);
 
-    const controlsHint = this.add.text(width - 12, height - 10, "B: 台帳　/　C: ステータス　/　M: 地図　/　ESC: ハブに戻る", {
+    const controlsHint = this.add.text(width - 12, height - 10, "B: 台帳　/　C: ステータス　/　M: 地図　/　1〜4: アイテム　/　ESC: ハブに戻る", {
       fontSize: "13px", color: "#aaaaaa",
     }).setOrigin(1, 1).setScrollFactor(0).setDepth(1000);
-    this.uiLayer.add([hudBg, this.hudText, this.hpBarBg, this.hpBarFg, this.expBarBg, this.expBarFg, this.deadText, controlsHint]);
+    this.hudExtra = this.add.text(16, 96, "", {
+      fontSize: "13px", color: "#ffe08a", stroke: "#000", strokeThickness: 3,
+    }).setScrollFactor(0).setDepth(1000);
+    this.uiLayer.add([hudBg, this.hudText, this.hpBarBg, this.hpBarFg, this.expBarBg, this.expBarFg, this.deadText, controlsHint, this.hudExtra]);
 
     // --- 入力 ---
     this.keys = addMoveKeys(this);
@@ -370,11 +375,16 @@ export class MmoGameScene extends Phaser.Scene {
     this.input.keyboard!.on("keydown-B", () => this.toggleBinder());
     this.input.keyboard!.on("keydown-C", () => this.toggleStatus());
     this.input.keyboard!.on("keydown-M", () => this.toggleWorldMap());
-    // 数字キーのタブ切替。ステータス開時は1〜4でタブ、台帳開時は1〜3でレアリティ
-    this.input.keyboard!.on("keydown-ONE", () => this.statusLayer ? this.setStatusTab("status") : this.setBinderTab("common"));
-    this.input.keyboard!.on("keydown-TWO", () => this.statusLayer ? this.setStatusTab("items") : this.setBinderTab("rare"));
-    this.input.keyboard!.on("keydown-THREE", () => this.statusLayer ? this.setStatusTab("equip") : this.setBinderTab("legend"));
-    this.input.keyboard!.on("keydown-FOUR", () => { if (this.statusLayer) this.setStatusTab("other"); });
+    // 数字キー：ステータス開=タブ(1〜4) / 台帳開=レアリティ(1〜3) / それ以外=アイテム即使用(1〜4)
+    const numKey = (statusTab: "status" | "items" | "equip" | "other", binderTab: "common" | "rare" | "legend" | null, itemIdx: number) => {
+      if (this.statusLayer) this.setStatusTab(statusTab);
+      else if (this.binderLayer) { if (binderTab) this.setBinderTab(binderTab); }
+      else if (!this.overlayOpen() && !this.chatOpen) this.useItem(ITEM_ORDER[itemIdx]);
+    };
+    this.input.keyboard!.on("keydown-ONE", () => numKey("status", "common", 0));
+    this.input.keyboard!.on("keydown-TWO", () => numKey("items", "rare", 1));
+    this.input.keyboard!.on("keydown-THREE", () => numKey("equip", "legend", 2));
+    this.input.keyboard!.on("keydown-FOUR", () => numKey("other", null, 3));
     this.input.keyboard!.on("keydown-E", () => this.tryTravel()); // ゲートで移動
 
     // エリア名＋移動プロンプト（画面固定）。狩場は「草原 B2」のように階層も表示
@@ -445,6 +455,7 @@ export class MmoGameScene extends Phaser.Scene {
     // 霊宝：カードメタ取得＋ドロップ通知
     void fetchCards().then((cs) => { this.cardById = new Map(cs.map((c) => [c.id, c])); }).catch(() => {});
     this.room.onMessage("relicFound", (m: { cardId: number }) => this.showRelicFound(m.cardId));
+    this.room.onMessage("itemFound", (m: { id: string }) => this.showItemFound(m.id));
     this.room.onMessage("achievement", (m: { id: string; desc: string; cardId: number | null }) => this.showAchievement(m));
     this.room.onMessage("chat", (m: { name: string; text: string }) => this.addChatLine(`${m.name}: ${m.text}`));
   }
@@ -669,6 +680,27 @@ export class MmoGameScene extends Phaser.Scene {
     if (this.binderLayer) void this.openBinder(); // 開いていれば即反映
   }
 
+  // アイテム入手ポップアップ（バフ薬ドロップ時）
+  private showItemFound(id: string) {
+    const meta = ITEM_META[id];
+    const cx = this.scale.width / 2;
+    const cont = this.add.container(cx, 150).setScrollFactor(0).setDepth(5000);
+    this.uiLayer.add(cont);
+    const bg = this.add.rectangle(0, 0, 320, 84, 0x15101f, 0.96).setStrokeStyle(3, 0x7ee787);
+    const icon = this.add.text(-128, 0, meta?.icon ?? "🎁", { fontSize: "40px" }).setOrigin(0.5);
+    const title = this.add.text(-92, -16, "🎁 アイテム入手！", { fontSize: "15px", color: "#7ee787", fontStyle: "bold" }).setOrigin(0, 0.5);
+    const name = this.add.text(-92, 14, meta?.name ?? id, { fontSize: "20px", color: "#ece7f5", fontStyle: "bold" }).setOrigin(0, 0.5);
+    cont.add([bg, icon, title, name]);
+    cont.setAlpha(0).setScale(0.85);
+    this.tweens.add({ targets: cont, alpha: 1, scale: 1, duration: 250, ease: "Back.easeOut" });
+    sfxScore();
+    this.time.delayedCall(2400, () => {
+      if (!cont.active) return;
+      this.tweens.add({ targets: cont, alpha: 0, y: 130, duration: 300, onComplete: () => cont.destroy() });
+    });
+    if (this.statusLayer && this.statusTab === "items") this.drawStatusTab();
+  }
+
   // --- ステータスパネル（Cキー。蒐集進捗＋RPG＋アカウント情報）---
 
   private toggleStatus() {
@@ -817,15 +849,20 @@ export class MmoGameScene extends Phaser.Scene {
       this.sTxt(c, colLX + 104, top + 150, `EXP  ${me.exp} / ${me.nextExp}`, 13, "#9ab8ff");
       bar(colLX + 104, top + 172, colW - 110, me.nextExp ? me.exp / me.nextExp : 0, 0x66aaff);
     }
-    const statY = top + 214;
+    const statY = top + 210;
+    const now = Date.now();
+    const buffs: string[] = [];
+    if (me && now < (me.buffAtkUntil ?? 0)) buffs.push(`💪攻撃UP ${Math.ceil((me.buffAtkUntil - now) / 1000)}s`);
+    if (me && now < (me.buffSpeedUntil ?? 0)) buffs.push(`👟速度UP ${Math.ceil((me.buffSpeedUntil - now) / 1000)}s`);
     const rows: Array<[string, string]> = me
-      ? [["攻撃力", `${me.atk}`], ["討伐数", `${me.kills ?? 0}`], ["プレイ時間", fmtTime(me.playSec)]]
+      ? [["攻撃力", `${me.atk}`], ["討伐数", `${me.kills ?? 0}`], ["ゴールド", `🪙 ${me.gold ?? 0}`],
+         ["プレイ時間", fmtTime(me.playSec)], ["効果中", buffs.length ? buffs.join("  ") : "なし"]]
       : [["", "（世界に入ると表示）"]];
     rows.forEach((r, i) => {
-      this.sTxt(c, colLX, statY + i * 30, r[0], 15, "#bdb6d0");
-      this.sTxt(c, colLX + colW, statY + i * 30, r[1], 15, "#ffffff", true).setOrigin(1, 0);
+      this.sTxt(c, colLX, statY + i * 28, r[0], 15, "#bdb6d0");
+      this.sTxt(c, colLX + colW, statY + i * 28, r[1], 15, buffs.length && r[0] === "効果中" ? "#7ee787" : "#ffffff", true).setOrigin(1, 0);
     });
-    const achY = statY + 110;
+    const achY = statY + 150;
     header(colLX, achY, "▸ 達成課題");
 
     // 右：蒐集進捗＋アカウント
@@ -880,27 +917,47 @@ export class MmoGameScene extends Phaser.Scene {
   private drawItemsTab(c: Phaser.GameObjects.Container, p: { px: number; py: number; pw: number; ph: number }) {
     const { px, py, pw, ph } = p;
     const x0 = px + 40, top = py + 78, listW = pw - 80;
+    const me: any = (this.room.state as any).players.get(this.myId);
     this.sTxt(c, x0, top, "▸ アイテム", 17, "#7ee787", true);
+    this.sTxt(c, x0 + listW, top + 2, `🪙 ${me?.gold ?? 0}`, 16, "#ffd966", true).setOrigin(1, 0);
     this.sRect(c, x0, top + 26, listW, 2, 0x4a4360).setOrigin(0, 0.5);
-    this.sTxt(c, x0, top + 36, "回復・バフなどの所持アイテム（今後実装）", 13, "#9b93b0");
+    this.sTxt(c, x0, top + 36, "クリック または 数字キー1〜4 で使用（バフ薬は討伐でドロップ）", 12, "#9b93b0");
 
-    // リスト枠
-    const listY = top + 62;
-    const listH = ph - (listY - py) - 40;
-    this.sRect(c, x0, listY, listW, listH, 0x120e1e).setOrigin(0, 0).setStrokeStyle(1, 0x3a3550);
-    // 見出し行（名称 / 効果 / 個数）
-    const rowH = 38, pad = 16;
+    const listY = top + 62, rowH = 46, pad = 14;
     this.sRect(c, x0, listY, listW, rowH, 0x241c38).setOrigin(0, 0);
-    this.sTxt(c, x0 + pad, listY + 11, "アイテム", 13, "#bdb6d0", true);
-    this.sTxt(c, x0 + listW * 0.42, listY + 11, "効果", 13, "#bdb6d0", true);
-    this.sTxt(c, x0 + listW - pad, listY + 11, "個数", 13, "#bdb6d0", true).setOrigin(1, 0);
-    // 空行の区切り（リストらしさ）
-    const rowsN = Math.max(1, Math.floor((listH - rowH) / rowH));
-    for (let i = 1; i <= rowsN; i++) {
-      this.sRect(c, x0, listY + rowH * i, listW, 1, 0x2a2440).setOrigin(0, 0.5);
+    this.sTxt(c, x0 + 60, listY + 14, "アイテム", 13, "#bdb6d0", true);
+    this.sTxt(c, x0 + listW * 0.46, listY + 14, "効果", 13, "#bdb6d0", true);
+    this.sTxt(c, x0 + listW - pad, listY + 14, "個数", 13, "#bdb6d0", true).setOrigin(1, 0);
+
+    // 所持アイテム（ITEM_ORDER順、個数>0のみ）
+    const owned = ITEM_ORDER.filter((id) => (me?.items?.get(id) ?? 0) > 0);
+    if (owned.length === 0) {
+      this.sRect(c, x0, listY + rowH, listW, ph - (listY + rowH - py) - 40, 0x120e1e).setOrigin(0, 0).setStrokeStyle(1, 0x3a3550);
+      this.sTxt(c, x0 + listW / 2, listY + rowH + 60, "所持しているアイテムはありません", 14, "#6a6285").setOrigin(0.5);
+      this.sTxt(c, x0 + listW / 2, listY + rowH + 86, "回復薬はショップ（今後実装）／バフ薬は討伐でドロップ", 12, "#544c6a").setOrigin(0.5);
+      return;
     }
-    // 中央メッセージ
-    this.sTxt(c, x0 + listW / 2, listY + rowH + (listH - rowH) / 2, "所持しているアイテムはありません", 14, "#6a6285").setOrigin(0.5);
+    owned.forEach((id, i) => {
+      const meta = ITEM_META[id]; const n = me.items.get(id) as number;
+      const ry = listY + rowH * (i + 1);
+      const row = this.add.rectangle(x0, ry, listW, rowH, 0x1c1530, 0.6).setOrigin(0, 0)
+        .setStrokeStyle(1, 0x3a3550).setInteractive({ useHandCursor: true });
+      c.add(row);
+      row.on("pointerover", () => row.setFillStyle(0x2a2150, 0.9));
+      row.on("pointerout", () => row.setFillStyle(0x1c1530, 0.6));
+      row.on("pointerdown", () => this.useItem(id));
+      this.sTxt(c, x0 + pad + 8, ry + rowH / 2, meta?.icon ?? "❔", 22, "#ffffff").setOrigin(0, 0.5);
+      this.sTxt(c, x0 + 60, ry + rowH / 2, `${i + 1}. ${meta?.name ?? id}`, 15, "#ece7f5").setOrigin(0, 0.5);
+      this.sTxt(c, x0 + listW * 0.46, ry + rowH / 2, meta?.desc ?? "", 13, "#bdb6d0").setOrigin(0, 0.5);
+      this.sTxt(c, x0 + listW - pad, ry + rowH / 2, `×${n}`, 15, "#ffffff", true).setOrigin(1, 0.5);
+    });
+  }
+
+  // アイテム使用をサーバーへ依頼し、少し後に画面を更新
+  private useItem(id: string) {
+    if ((((this.room.state as any).players.get(this.myId)?.items?.get(id)) ?? 0) <= 0) return;
+    this.room.send("useItem", { id });
+    this.time.delayedCall(160, () => { if (this.statusLayer) this.drawStatusTab(); });
   }
 
   private drawEquipTab(c: Phaser.GameObjects.Container, p: { px: number; py: number; pw: number; ph: number }) {
@@ -1200,6 +1257,11 @@ export class MmoGameScene extends Phaser.Scene {
       this.hudText.setText(`Lv.${me.level}   ${me.name}`);
       this.hpBarFg.width = 220 * Math.max(0, me.hp / me.maxHp);
       this.expBarFg.width = 220 * Math.max(0, Math.min(1, me.exp / me.nextExp));
+      const nowMs = Date.now();
+      const bf: string[] = [`🪙 ${me.gold ?? 0}`];
+      if (nowMs < (me.buffAtkUntil ?? 0)) bf.push(`💪${Math.ceil((me.buffAtkUntil - nowMs) / 1000)}s`);
+      if (nowMs < (me.buffSpeedUntil ?? 0)) bf.push(`👟${Math.ceil((me.buffSpeedUntil - nowMs) / 1000)}s`);
+      this.hudExtra.setText(bf.join("   "));
       this.deadText.setVisible(me.dead);
       if (me.dead) {
         const sec = Math.max(0, (me.respawnAt - Date.now()) / 1000);
@@ -1237,10 +1299,12 @@ export class MmoGameScene extends Phaser.Scene {
     if (len > 0) { dx /= len; dy /= len; }
     const mapW = (this.room.state as any).mapWidth;
     const mapH = (this.room.state as any).mapHeight;
+    // 俊足の薬バフ中はサーバーと同じく速度を上げる（予測一致＝巻き戻り防止）
+    const spd = PLAYER_SPEED * (Date.now() < (entity.buffSpeedUntil ?? 0) ? SPEED_BUFF_MUL : 1);
     // 軸分離（サーバーの moveEntity と同じ順序）で障害物に当てる
     let nx = px, ny = py;
-    if (dx !== 0) nx = this.collideAxis(px + dx * PLAYER_SPEED * dt, py, dx > 0, true);
-    if (dy !== 0) ny = this.collideAxis(nx, py + dy * PLAYER_SPEED * dt, dy > 0, false);
+    if (dx !== 0) nx = this.collideAxis(px + dx * spd * dt, py, dx > 0, true);
+    if (dy !== 0) ny = this.collideAxis(nx, py + dy * spd * dt, dy > 0, false);
     nx = Phaser.Math.Clamp(nx, ENTITY_RADIUS, mapW - ENTITY_RADIUS);
     ny = Phaser.Math.Clamp(ny, ENTITY_RADIUS, mapH - ENTITY_RADIUS);
     const drift = Math.hypot(entity.x - nx, entity.y - ny);

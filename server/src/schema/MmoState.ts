@@ -21,6 +21,10 @@ export class MmoPlayer extends Schema {
   @type("number") colorIndex: number = 0;
   @type("number") kills: number = 0;     // 累計討伐数（永続）
   @type("number") playSec: number = 0;   // 累計プレイ時間(秒、永続)
+  @type("number") gold: number = 0;      // 所持ゴールド（永続）
+  @type({ map: "number" }) items = new MapSchema<number>(); // 所持アイテム（itemId→個数、永続）
+  @type("number") buffAtkUntil: number = 0;   // 攻撃バフの有効期限(Date.now)
+  @type("number") buffSpeedUntil: number = 0; // 速度バフの有効期限(Date.now)
 }
 
 // モンスター。
