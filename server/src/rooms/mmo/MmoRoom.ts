@@ -203,6 +203,11 @@ export class MmoRoom extends Room<MmoState> {
       this.useItem(client.sessionId, message?.id ?? "");
     });
 
+    // アイテム購入（ショップ。ゴールドを消費）
+    this.onMessage("buyItem", (client, message: { id?: string }) => {
+      this.buyItem(client.sessionId, message?.id ?? "");
+    });
+
     this.setSimulationInterval((dt) => this.update(dt), 1000 / TICK_RATE);
     this.lastTick = Date.now();
   }
@@ -451,6 +456,7 @@ export class MmoRoom extends Room<MmoState> {
     // 岩
     box(560 - 14, 600 - 12, 28, 12);
     box(470 - 14, 300 - 12, 28, 12);
+    box(880 - 48, 250 - 14, 96, 40); // ショップ（clientの buildTownDecor と一致）
   }
 
   private setupGates() {
@@ -737,6 +743,17 @@ export class MmoRoom extends Room<MmoState> {
     }
     const left = (p.items.get(id) ?? 0) - 1;
     if (left <= 0) p.items.delete(id); else p.items.set(id, left);
+    this.persistStats(p);
+  }
+
+  // アイテム購入（price のある回復系のみ）。ゴールド消費。
+  private buyItem(sid: string, id: string) {
+    const p = this.state.players.get(sid);
+    const def = ITEMS[id];
+    if (!p || !def || !def.price) return;
+    if (p.gold < def.price) return;
+    p.gold -= def.price;
+    this.addItem(p, id);
     this.persistStats(p);
   }
 

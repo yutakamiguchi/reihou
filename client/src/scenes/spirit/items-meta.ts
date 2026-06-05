@@ -10,3 +10,9 @@ export const ITEM_META: Record<string, ItemMeta> = {
 // ホットキー1〜4／一覧の並び順
 export const ITEM_ORDER = ["potion_s", "potion_l", "elixir_atk", "elixir_spd"];
 export const SPEED_BUFF_MUL = 1.4; // サーバーの SPEED_BUFF_MUL と一致（移動予測用）
+
+// ショップで購入できるアイテム（価格表示用。実際の課金判定はサーバー権威）
+export const SHOP_ITEMS: Array<{ id: string; price: number }> = [
+  { id: "potion_s", price: 30 },
+  { id: "potion_l", price: 80 },
+];

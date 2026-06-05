@@ -9,7 +9,7 @@ import { addMoveKeys } from "../../ui/inputKeys";
 import { makeInput } from "../../ui/nameInput";
 import { fetchCards, fetchMyCards, type Card } from "../../spirit";
 import { CARD_ICON, CARD_DESC, RARITY_META, RELIC_IMAGE_NAMES, relicTexKey } from "../spirit/cards-meta";
-import { ITEM_META, ITEM_ORDER, SPEED_BUFF_MUL } from "../spirit/items-meta";
+import { ITEM_META, ITEM_ORDER, SPEED_BUFF_MUL, SHOP_ITEMS } from "../spirit/items-meta";
 import { ACHIEVEMENTS } from "../spirit/achievements";
 import { getMyProfile, getUser } from "../../auth";
 import { joinPublicRoom } from "../../net";
@@ -87,6 +87,9 @@ export class MmoGameScene extends Phaser.Scene {
   private gates: Array<{ x: number; y: number; toArea: string; label: string }> = [];
   private gatePrompt?: Phaser.GameObjects.Text;
   private nearGate: { toArea: string; label: string } | null = null;
+  private shopPos?: { x: number; y: number }; // 町のショップ地点（近接でE）
+  private nearShop = false;
+  private shopLayer?: Phaser.GameObjects.Container;
   private traveling = false;
   private chatOpen = false;
   private chatInput?: HTMLInputElement;
@@ -144,6 +147,9 @@ export class MmoGameScene extends Phaser.Scene {
     this.gates = [];
     this.obstacles = [];
     this.nearGate = null;
+    this.shopPos = undefined;
+    this.nearShop = false;
+    this.shopLayer = undefined;
     this.traveling = false;
     this.predictReady = false;
     this.lastInputSent = { up: false, down: false, left: false, right: false };
@@ -235,6 +241,16 @@ export class MmoGameScene extends Phaser.Scene {
     trunk(180, 720); trunk(1150, 720); trunk(760, 210);
     box(560 - 14, 600 - 12, 28, 12); // 岩
     box(470 - 14, 300 - 12, 28, 12);
+
+    // ショップ（看板＋のれん）。近づくと [E] で開く
+    const sx = 880, sy = 250;
+    this.shopPos = { x: sx, y: sy + 30 };
+    const awning = this.add.rectangle(sx, sy - 18, 96, 26, 0xc0533a).setStrokeStyle(2, 0x7a2f1f).setDepth(sy);
+    const stall = this.add.rectangle(sx, sy + 6, 96, 40, 0x6b4a2a).setStrokeStyle(2, 0x3a2814).setDepth(sy);
+    const sicon = this.add.text(sx, sy + 6, "🛒", { fontSize: "26px" }).setOrigin(0.5).setDepth(sy);
+    const slabel = this.add.text(sx, sy - 40, "ショップ", { fontSize: "15px", color: "#ffe08a", fontStyle: "bold", stroke: "#000", strokeThickness: 3 }).setOrigin(0.5).setDepth(sy);
+    this.worldLayer.add([awning, stall, sicon, slabel]);
+    box(sx - 48, sy - 14, 96, 40); // ショップの当たり判定
   }
 
   // 狩場の装飾を散布（テーマで内容が変わる）。非衝突＝見た目のみ
@@ -358,7 +374,8 @@ export class MmoGameScene extends Phaser.Scene {
     this.input.keyboard!.on("keydown-W", () => selKey(0, -1));
     this.input.keyboard!.on("keydown-S", () => selKey(0, 1));
     this.input.keyboard!.on("keydown-ESC", () => {
-      if (this.worldmapLayer) this.closeWorldMap();
+      if (this.shopLayer) this.closeShop();
+      else if (this.worldmapLayer) this.closeWorldMap();
       else if (this.statusLayer) this.closeStatus();
       else if (this.binderLayer && this.binderDetail) { this.binderDetail = false; this.drawBinder(); } // 詳細→一覧
       else if (this.binderLayer) this.closeBinder();
@@ -385,7 +402,10 @@ export class MmoGameScene extends Phaser.Scene {
     this.input.keyboard!.on("keydown-TWO", () => numKey("items", "rare", 1));
     this.input.keyboard!.on("keydown-THREE", () => numKey("equip", "legend", 2));
     this.input.keyboard!.on("keydown-FOUR", () => numKey("other", null, 3));
-    this.input.keyboard!.on("keydown-E", () => this.tryTravel()); // ゲートで移動
+    this.input.keyboard!.on("keydown-E", () => { // ショップ or ゲート
+      if (this.nearShop && !this.overlayOpen()) this.openShop();
+      else this.tryTravel();
+    });
 
     // エリア名＋移動プロンプト（画面固定）。狩場は「草原 B2」のように階層も表示
     const areaTitle = isTown
@@ -701,6 +721,70 @@ export class MmoGameScene extends Phaser.Scene {
     if (this.statusLayer && this.statusTab === "items") this.drawStatusTab();
   }
 
+  // --- ショップ（町でEキー。ゴールドで回復薬を購入）---
+
+  private closeShop() {
+    this.shopLayer?.destroy();
+    this.shopLayer = undefined;
+  }
+
+  private openShop() {
+    if (this.overlayOpen()) return;
+    const layer = this.add.container(0, 0).setScrollFactor(0).setDepth(7000);
+    this.uiLayer.add(layer);
+    this.shopLayer = layer;
+    this.drawShop();
+  }
+
+  private drawShop() {
+    const layer = this.shopLayer; if (!layer) return;
+    layer.removeAll(true);
+    const { width, height } = this.scale;
+    const cx = width / 2;
+    const me: any = (this.room.state as any).players.get(this.myId);
+    const pw = Math.min(720, width - 80), ph = Math.min(520, height - 80);
+    const px = cx - pw / 2, py = (height - ph) / 2;
+    const T = (x: number, y: number, t: string, size: number, color: string, bold = false) => {
+      const o = this.add.text(x, y, t, { fontSize: `${size}px`, color, fontStyle: bold ? "bold" : "normal" });
+      layer.add(o); return o;
+    };
+    layer.add(this.add.rectangle(cx, height / 2, width, height, 0x000000, 0.85).setInteractive());
+    layer.add(this.add.rectangle(cx, py + ph / 2, pw, ph, 0x161122, 0.98).setStrokeStyle(2, 0x6b5a8f));
+    T(px + 28, py + 22, "🛒 ショップ", 24, "#e8c87e", true);
+    T(px + pw - 28, py + 26, `所持 🪙 ${me?.gold ?? 0}`, 17, "#ffd966", true).setOrigin(1, 0);
+    const close = T(px + pw - 28, py + ph - 30, "✕ 閉じる (Esc / E)", 14, "#cccccc").setOrigin(1, 0).setInteractive({ useHandCursor: true });
+    close.on("pointerdown", () => this.closeShop());
+
+    const rowH = 64, listX = px + 28, listW = pw - 56, top = py + 70;
+    SHOP_ITEMS.forEach((s, i) => {
+      const meta = ITEM_META[s.id];
+      const owned = (me?.items?.get(s.id) ?? 0) as number;
+      const ry = top + i * (rowH + 12);
+      layer.add(this.add.rectangle(listX, ry, listW, rowH, 0x1c1530, 0.85).setOrigin(0, 0).setStrokeStyle(1, 0x3a3550));
+      T(listX + 18, ry + rowH / 2, meta?.icon ?? "🧪", 30, "#ffffff").setOrigin(0, 0.5);
+      T(listX + 64, ry + 14, `${meta?.name ?? s.id}`, 17, "#ece7f5", true);
+      T(listX + 64, ry + 40, `${meta?.desc ?? ""}　／　所持 ×${owned}`, 13, "#bdb6d0");
+      // 価格＋購入ボタン
+      const canBuy = (me?.gold ?? 0) >= s.price;
+      const btnW = 130, btnX = listX + listW - btnW - 12, btnY = ry + rowH / 2;
+      const btn = this.add.rectangle(btnX, btnY, btnW, 40, canBuy ? 0x2f7d4f : 0x3a3550).setOrigin(0, 0.5)
+        .setStrokeStyle(1, canBuy ? 0x57c084 : 0x4a4360);
+      if (canBuy) btn.setInteractive({ useHandCursor: true }).on("pointerdown", () => this.buyItem(s.id));
+      layer.add(btn);
+      T(btnX + btnW / 2, btnY, `🪙${s.price} 購入`, 15, canBuy ? "#ffffff" : "#7a7390", true).setOrigin(0.5);
+    });
+    T(cx, py + ph - 30, "ゴールドは討伐で貯まる", 12, "#6a6285").setOrigin(0.5);
+  }
+
+  private buyItem(id: string) {
+    const me: any = (this.room.state as any).players.get(this.myId);
+    const shop = SHOP_ITEMS.find((s) => s.id === id);
+    if (!shop || (me?.gold ?? 0) < shop.price) return;
+    this.room.send("buyItem", { id });
+    sfxScore();
+    this.time.delayedCall(160, () => { if (this.shopLayer) this.drawShop(); });
+  }
+
   // --- ステータスパネル（Cキー。蒐集進捗＋RPG＋アカウント情報）---
 
   private toggleStatus() {
@@ -998,7 +1082,7 @@ export class MmoGameScene extends Phaser.Scene {
     this.binderLayer = undefined;
   }
 
-  private overlayOpen(): boolean { return !!(this.binderLayer || this.statusLayer || this.worldmapLayer); }
+  private overlayOpen(): boolean { return !!(this.binderLayer || this.statusLayer || this.worldmapLayer || this.shopLayer); }
 
   // --- チャット（/ で開く）---
 
@@ -1269,17 +1353,20 @@ export class MmoGameScene extends Phaser.Scene {
       }
     }
 
-    // ゲート近接判定（近づくと [E] プロンプト）
+    // ゲート／ショップ近接判定（近づくと [E] プロンプト）
     if (me && !this.overlayOpen() && !me.dead) {
       let near: { toArea: string; label: string } | null = null;
       for (const g of this.gates) {
         if (Math.hypot(me.x - g.x, me.y - g.y) <= 80) { near = { toArea: g.toArea, label: g.label }; break; }
       }
       this.nearGate = near;
+      this.nearShop = !near && !!this.shopPos && Math.hypot(me.x - this.shopPos.x, me.y - this.shopPos.y) <= 90;
       if (near) this.gatePrompt?.setText(`[E] ${near.label}`).setVisible(true);
+      else if (this.nearShop) this.gatePrompt?.setText("[E] ショップ").setVisible(true);
       else this.gatePrompt?.setVisible(false);
     } else {
       this.nearGate = null;
+      this.nearShop = false;
       this.gatePrompt?.setVisible(false);
     }
   }
