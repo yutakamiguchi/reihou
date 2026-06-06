@@ -12,7 +12,12 @@ export class MmoPlayer extends Schema {
   @type("number") hp: number = 100;
   @type("number") maxHp: number = 100;
   @type("number") atk: number = 10;
+  @type("number") def: number = 1;    // 防御力（被ダメ軽減。= 1 + bonusDef）
   @type("number") level: number = 1;
+  // 巻物による恒久ボーナス（永続。atk/maxHp/def はこれ＋レベル由来から再計算）
+  @type("number") bonusAtk: number = 0;
+  @type("number") bonusDef: number = 0;
+  @type("number") bonusMaxHp: number = 0;
   @type("number") exp: number = 0;
   @type("number") nextExp: number = 20;
   @type("number") attackUntil: number = 0;
@@ -49,6 +54,13 @@ export class Relic extends Schema {
   @type("number") y: number = 0;
 }
 
+// フィールドに湧く宝箱（[E]で開封 → バフ薬＋ゴールド）。
+export class Treasure extends Schema {
+  @type("string") id: string = "";
+  @type("number") x: number = 0;
+  @type("number") y: number = 0;
+}
+
 // エリア間を移動するゲート（近づいてEで移動）。
 export class Gate extends Schema {
   @type("number") x: number = 0;
@@ -61,6 +73,7 @@ export class MmoState extends Schema {
   @type({ map: MmoPlayer }) players = new MapSchema<MmoPlayer>();
   @type({ map: Mob }) mobs = new MapSchema<Mob>();
   @type({ map: Relic }) relics = new MapSchema<Relic>();
+  @type({ map: Treasure }) treasures = new MapSchema<Treasure>();
   @type({ map: Gate }) gates = new MapSchema<Gate>();
   @type("string") area: string = "town"; // "town" / "hunt:<ground>:<floor>"
   @type("string") ground: string = "town"; // テーマ用ID: town / grass / cave

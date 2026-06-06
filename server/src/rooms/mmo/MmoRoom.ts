@@ -1,5 +1,5 @@
 import { Room, Client } from "colyseus";
-import { MmoState, MmoPlayer, Mob, Relic, Gate } from "../../schema/MmoState";
+import { MmoState, MmoPlayer, Mob, Relic, Treasure, Gate } from "../../schema/MmoState";
 import { supabaseAdmin, isSupabaseConfigured, loadGameStats, saveGameStats } from "../../supabase";
 
 const SPIRIT_GAME_KEY = "spirit"; // game_stats のキー（霊宝の世界の進行）
@@ -94,23 +94,34 @@ const PLAYER_RESPAWN_DELAY_MS = 4000;
 const RELIC_TARGET = 6;            // フィールドに常時湧かせる霊宝ノード数
 const RELIC_PICKUP_RANGE = 30;     // 拾得判定の距離
 const RELIC_SPAWN_COOLDOWN_MS = 4000;
+const TREASURE_TARGET = 2;         // 狩場に常時湧かせる宝箱の数
+const TREASURE_OPEN_RANGE = 48;    // 開封判定の距離（[E]）
+const TREASURE_SPAWN_COOLDOWN_MS = 12000;
 
 // --- アイテム ---
 // kind: heal=HP回復 / buffAtk=攻撃倍率 / buffSpeed=移動速度倍率（バフは durationMs 間）
+//       perm=恒久ステータスアップ（巻物。stat へ value を加算）
 interface ItemDef {
-  id: string; name: string; kind: "heal" | "buffAtk" | "buffSpeed";
-  value: number;        // heal=回復量 / buff=倍率
+  id: string; name: string; kind: "heal" | "buffAtk" | "buffSpeed" | "perm";
+  value: number;        // heal=回復量 / buff=倍率 / perm=上昇量
   durationMs?: number;  // バフの持続
   price?: number;       // ショップ価格（回復系）
-  dropWeight?: number;  // mobドロップの重み（バフ系）
+  sell?: number;        // 売却額（所持アイテムをゴールド化）
+  dropWeight?: number;  // mobドロップの重み（バフ・巻物系）
+  stat?: "atk" | "def" | "maxHp"; // perm の対象ステータス
 }
 const ITEMS: Record<string, ItemDef> = {
-  potion_s:   { id: "potion_s",   name: "回復薬",     kind: "heal",      value: 60,  price: 30 },
-  potion_l:   { id: "potion_l",   name: "上級回復薬", kind: "heal",      value: 180, price: 80 },
-  elixir_atk: { id: "elixir_atk", name: "力の薬",     kind: "buffAtk",   value: 1.5, durationMs: 30000, dropWeight: 1 },
-  elixir_spd: { id: "elixir_spd", name: "俊足の薬",   kind: "buffSpeed", value: 1.4, durationMs: 30000, dropWeight: 1 },
+  potion_s:   { id: "potion_s",   name: "回復薬",     kind: "heal",      value: 60,  price: 30, sell: 12 },
+  potion_l:   { id: "potion_l",   name: "上級回復薬", kind: "heal",      value: 180, price: 80, sell: 32 },
+  elixir_atk: { id: "elixir_atk", name: "力の薬",     kind: "buffAtk",   value: 1.5, durationMs: 30000, sell: 16 }, // 入手は宝箱
+  elixir_spd: { id: "elixir_spd", name: "俊足の薬",   kind: "buffSpeed", value: 1.4, durationMs: 30000, sell: 16 }, // 入手は宝箱
+  scroll_atk: { id: "scroll_atk", name: "力の巻物",   kind: "perm", stat: "atk",   value: 3,  dropWeight: 1, sell: 80 },
+  scroll_def: { id: "scroll_def", name: "堅の巻物",   kind: "perm", stat: "def",   value: 1,  dropWeight: 1, sell: 80 },
+  scroll_hp:  { id: "scroll_hp",  name: "生命の巻物", kind: "perm", stat: "maxHp", value: 20, dropWeight: 1, sell: 80 },
 };
-const BUFF_DROP_CHANCE = 0.06; // 討伐時にバフ薬が落ちる確率
+// 討伐ドロップは巻物のみ（バフ薬は宝箱から）。各巻物 ≈ 0.67% × 1/3 ≈ 0.22%
+const SCROLL_DROP_CHANCE = 0.0067;
+const BUFF_TREASURE_ITEMS = ["elixir_atk", "elixir_spd"]; // 宝箱から出るバフ薬
 const ATK_BUFF_MUL = ITEMS.elixir_atk.value;
 const SPEED_BUFF_MUL = ITEMS.elixir_spd.value;
 // ドロップ対象（バフ系）を重み付き抽選
@@ -153,6 +164,8 @@ export class MmoRoom extends Room<MmoState> {
   private mobSeq = 0;
   private relicSeq = 0;
   private lastRelicSpawnAt = 0;
+  private treasureSeq = 0;
+  private lastTreasureSpawnAt = 0;
   private nextBossAt = 0;
   private lastTick = 0;
   // 霊宝の所有を保存する先＝Supabaseのアカウント。sessionId -> profile_id（ゲストは null）
@@ -208,6 +221,16 @@ export class MmoRoom extends Room<MmoState> {
       this.buyItem(client.sessionId, message?.id ?? "");
     });
 
+    // アイテム売却（ショップ。ゴールドを得る）
+    this.onMessage("sellItem", (client, message: { id?: string }) => {
+      this.sellItem(client.sessionId, message?.id ?? "");
+    });
+
+    // 宝箱を開ける（[E]。近接の宝箱からバフ薬＋ゴールド）
+    this.onMessage("openTreasure", (client, message: { id?: string }) => {
+      this.openTreasure(client.sessionId, message?.id ?? "");
+    });
+
     this.setSimulationInterval((dt) => this.update(dt), 1000 / TICK_RATE);
     this.lastTick = Date.now();
   }
@@ -246,14 +269,15 @@ export class MmoRoom extends Room<MmoState> {
     if (profileId && isSupabaseConfigured) {
       const s = await loadGameStats(profileId, SPIRIT_GAME_KEY);
       if (s) {
+        p.bonusAtk = typeof s.bonusAtk === "number" ? s.bonusAtk : 0;
+        p.bonusDef = typeof s.bonusDef === "number" ? s.bonusDef : 0;
+        p.bonusMaxHp = typeof s.bonusMaxHp === "number" ? s.bonusMaxHp : 0;
         if (typeof s.level === "number" && s.level >= 1) {
           p.level = s.level;
           p.exp = typeof s.exp === "number" ? s.exp : 0;
           p.nextExp = nextExpFor(p.level);
-          p.maxHp = maxHpFor(p.level);
-          p.atk = atkFor(p.level);
-          p.hp = p.maxHp;
         }
+        this.recalcStats(p, true); // レベル＋巻物ボーナスから atk/maxHp/def を再計算
         p.kills = typeof s.kills === "number" ? s.kills : 0;
         basePlaySec = typeof s.playSec === "number" ? s.playSec : 0;
         claimed = Array.isArray(s.claimed) ? s.claimed : [];
@@ -298,6 +322,7 @@ export class MmoRoom extends Room<MmoState> {
       level: p.level, exp: p.exp, kills: p.kills, playSec: p.playSec,
       claimed: rt ? [...rt.claimed] : [],
       gold: p.gold, items: Object.fromEntries(p.items.entries()),
+      bonusAtk: p.bonusAtk, bonusDef: p.bonusDef, bonusMaxHp: p.bonusMaxHp,
     });
   }
 
@@ -551,7 +576,9 @@ export class MmoRoom extends Room<MmoState> {
           const last = ai.lastTouchAt.get(t.id) ?? 0;
           if (now - last >= MOB_TOUCH_DMG_COOLDOWN_MS) {
             ai.lastTouchAt.set(t.id, now);
-            t.hp = Math.max(0, t.hp - m.atk);
+            // 割合軽減（上限付）: 被ダメ = 敵atk × 100/(100+def)、最小1
+            const dmg = Math.max(1, Math.round(m.atk * (100 / (100 + Math.max(0, t.def)))));
+            t.hp = Math.max(0, t.hp - dmg);
             if (t.hp <= 0) this.killPlayer(t, now);
           }
         }
@@ -592,6 +619,11 @@ export class MmoRoom extends Room<MmoState> {
       this.spawnRelic();
       this.lastRelicSpawnAt = now + RELIC_SPAWN_COOLDOWN_MS;
     }
+    // 宝箱：補充（開封は openTreasure メッセージで）
+    if (this.state.treasures.size < TREASURE_TARGET && now >= this.lastTreasureSpawnAt) {
+      this.spawnTreasure();
+      this.lastTreasureSpawnAt = now + TREASURE_SPAWN_COOLDOWN_MS;
+    }
     } // isField（狩場のみ）
 
     // プレイ時間を更新（整数秒なので変化は毎秒1回＝差分送信は軽い）
@@ -611,6 +643,28 @@ export class MmoRoom extends Room<MmoState> {
     r.id = `relic_${this.relicSeq++}`;
     this.placeRandomly(r);
     this.state.relics.set(r.id, r);
+  }
+
+  private spawnTreasure() {
+    const t = new Treasure();
+    t.id = `treasure_${this.treasureSeq++}`;
+    this.placeRandomly(t);
+    this.state.treasures.set(t.id, t);
+  }
+
+  // 宝箱を開ける（サーバー権威で近接判定）。バフ薬1個＋ゴールドを付与。
+  private openTreasure(sid: string, id: string) {
+    const p = this.state.players.get(sid);
+    const t = this.state.treasures.get(id);
+    if (!p || p.dead || !t) return;
+    if (Math.hypot(p.x - t.x, p.y - t.y) > TREASURE_OPEN_RANGE) return; // 範囲外
+    this.state.treasures.delete(id); // 即削除＝二重開封防止
+    const itemId = BUFF_TREASURE_ITEMS[Math.floor(Math.random() * BUFF_TREASURE_ITEMS.length)];
+    this.addItem(p, itemId);
+    const gold = 30 + this.floor * 20 + Math.floor(Math.random() * 20);
+    p.gold += gold;
+    this.clients.find((c) => c.sessionId === sid)?.send("treasureOpened", { itemId, gold });
+    this.persistStats(p);
   }
 
   private countAliveMobs(): number {
@@ -687,8 +741,8 @@ export class MmoRoom extends Room<MmoState> {
     const def = MOB_KINDS[mob.kind] ?? MOB_KINDS.grunt;
     // ゴールド獲得（強敵・深層ほど多い）
     attacker.gold += Math.max(1, Math.round((2 + this.floor * 2) * def.expMul));
-    // バフ薬ドロップ（霊宝とは別枠）
-    if (Math.random() < BUFF_DROP_CHANCE) {
+    // 巻物ドロップ（霊宝とは別枠。バフ薬は宝箱から）
+    if (Math.random() < SCROLL_DROP_CHANCE) {
       const itemId = pickDropItem();
       this.addItem(attacker, itemId);
       this.clients.find((c) => c.sessionId === attacker.id)?.send("itemFound", { id: itemId });
@@ -700,11 +754,9 @@ export class MmoRoom extends Room<MmoState> {
     while (attacker.exp >= attacker.nextExp) {
       attacker.exp -= attacker.nextExp;
       attacker.level += 1;
-      attacker.maxHp += 20;
-      attacker.atk += 3;
-      attacker.hp = attacker.maxHp; // レベルアップで全回復
-      attacker.nextExp = 20 + (attacker.level - 1) * 15;
+      attacker.nextExp = nextExpFor(attacker.level);
     }
+    if (attacker.level > oldLevel) this.recalcStats(attacker, true); // 巻物ボーナス込みで再計算＋全回復
     if (attacker.level > oldLevel) this.persistStats(attacker); // レベルアップ時に保存
     // mob 消滅（次tickで補充）
     this.state.mobs.delete(mobId);
@@ -726,7 +778,16 @@ export class MmoRoom extends Room<MmoState> {
     p.items.set(id, (p.items.get(id) ?? 0) + n);
   }
 
-  // アイテム使用（サーバー権威）。回復はHP回復、バフは一定時間有効化。
+  // レベル由来 + 巻物ボーナスから atk/maxHp/def を再計算。
+  // healFull=true で全回復、それ以外は現HPを上限内に収める。
+  private recalcStats(p: MmoPlayer, healFull = false) {
+    p.maxHp = maxHpFor(p.level) + p.bonusMaxHp;
+    p.atk = atkFor(p.level) + p.bonusAtk;
+    p.def = 1 + p.bonusDef;
+    p.hp = healFull ? p.maxHp : Math.min(p.hp, p.maxHp);
+  }
+
+  // アイテム使用（サーバー権威）。回復はHP回復、バフは一定時間有効化、巻物は恒久ステアップ。
   private useItem(sid: string, id: string) {
     const p = this.state.players.get(sid);
     const def = ITEMS[id];
@@ -740,9 +801,28 @@ export class MmoRoom extends Room<MmoState> {
       p.buffAtkUntil = now + (def.durationMs ?? 0);
     } else if (def.kind === "buffSpeed") {
       p.buffSpeedUntil = now + (def.durationMs ?? 0);
+    } else if (def.kind === "perm") {
+      if (def.stat === "atk") p.bonusAtk += def.value;
+      else if (def.stat === "def") p.bonusDef += def.value;
+      else if (def.stat === "maxHp") p.bonusMaxHp += def.value;
+      const wasFull = p.hp >= p.maxHp;
+      this.recalcStats(p, false);
+      if (def.stat === "maxHp" && wasFull) p.hp = p.maxHp; // HP上限が増えた分も埋める
     }
     const left = (p.items.get(id) ?? 0) - 1;
     if (left <= 0) p.items.delete(id); else p.items.set(id, left);
+    this.persistStats(p);
+  }
+
+  // アイテム売却（所持を1つ減らし sell 分のゴールドを得る）。
+  private sellItem(sid: string, id: string) {
+    const p = this.state.players.get(sid);
+    const def = ITEMS[id];
+    if (!p || !def || !def.sell) return;
+    if ((p.items.get(id) ?? 0) <= 0) return;
+    const left = (p.items.get(id) ?? 0) - 1;
+    if (left <= 0) p.items.delete(id); else p.items.set(id, left);
+    p.gold += def.sell;
     this.persistStats(p);
   }
 

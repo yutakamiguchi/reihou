@@ -9,7 +9,7 @@ import { addMoveKeys } from "../../ui/inputKeys";
 import { makeInput } from "../../ui/nameInput";
 import { fetchCards, fetchMyCards, type Card } from "../../spirit";
 import { CARD_ICON, CARD_DESC, RARITY_META, RELIC_IMAGE_NAMES, relicTexKey } from "../spirit/cards-meta";
-import { ITEM_META, ITEM_ORDER, SPEED_BUFF_MUL, SHOP_ITEMS } from "../spirit/items-meta";
+import { ITEM_META, ITEM_ORDER, SPEED_BUFF_MUL, SHOP_ITEMS, SELL_PRICES } from "../spirit/items-meta";
 import { ACHIEVEMENTS } from "../spirit/achievements";
 import { getMyProfile, getUser } from "../../auth";
 import { joinPublicRoom } from "../../net";
@@ -84,12 +84,15 @@ export class MmoGameScene extends Phaser.Scene {
   private players = new Map<string, PlayerView>();
   private mobs = new Map<string, MobView>();
   private relicViews = new Map<string, Phaser.GameObjects.Container>();
+  private treasureViews = new Map<string, Phaser.GameObjects.Container>();
   private gates: Array<{ x: number; y: number; toArea: string; label: string }> = [];
   private gatePrompt?: Phaser.GameObjects.Text;
   private nearGate: { toArea: string; label: string } | null = null;
+  private nearTreasure: string | null = null; // 近接している宝箱のid
   private shopPos?: { x: number; y: number }; // 町のショップ地点（近接でE）
   private nearShop = false;
   private shopLayer?: Phaser.GameObjects.Container;
+  private shopTab: "buy" | "sell" = "buy";
   private traveling = false;
   private chatOpen = false;
   private chatInput?: HTMLInputElement;
@@ -144,9 +147,11 @@ export class MmoGameScene extends Phaser.Scene {
     this.players.clear();
     this.mobs.clear();
     this.relicViews.clear();
+    this.treasureViews.clear();
     this.gates = [];
     this.obstacles = [];
     this.nearGate = null;
+    this.nearTreasure = null;
     this.shopPos = undefined;
     this.nearShop = false;
     this.shopLayer = undefined;
@@ -402,9 +407,11 @@ export class MmoGameScene extends Phaser.Scene {
     this.input.keyboard!.on("keydown-TWO", () => numKey("items", "rare", 1));
     this.input.keyboard!.on("keydown-THREE", () => numKey("equip", "legend", 2));
     this.input.keyboard!.on("keydown-FOUR", () => numKey("other", null, 3));
-    this.input.keyboard!.on("keydown-E", () => { // ショップ or ゲート
-      if (this.nearShop && !this.overlayOpen()) this.openShop();
-      else this.tryTravel();
+    this.input.keyboard!.on("keydown-E", () => { // ショップ / ゲート / 宝箱
+      if (this.overlayOpen()) return;
+      if (this.nearShop) this.openShop();
+      else if (this.nearGate) void this.tryTravel();
+      else if (this.nearTreasure) this.room.send("openTreasure", { id: this.nearTreasure });
     });
 
     // エリア名＋移動プロンプト（画面固定）。狩場は「草原 B2」のように階層も表示
@@ -467,6 +474,9 @@ export class MmoGameScene extends Phaser.Scene {
     $(state).relics.onAdd((r: any, id: string) => this.addRelicView(id, r));
     $(state).relics.onRemove((_r: any, id: string) => this.removeRelicView(id));
 
+    $(state).treasures.onAdd((t: any, id: string) => this.addTreasureView(id, t));
+    $(state).treasures.onRemove((_t: any, id: string) => this.removeTreasureView(id));
+
     $(state).gates.onAdd((g: any) => this.addGateView(g));
 
     // 移動中の room.leave では再joinするのでロビーへ戻さない
@@ -476,6 +486,7 @@ export class MmoGameScene extends Phaser.Scene {
     void fetchCards().then((cs) => { this.cardById = new Map(cs.map((c) => [c.id, c])); }).catch(() => {});
     this.room.onMessage("relicFound", (m: { cardId: number }) => this.showRelicFound(m.cardId));
     this.room.onMessage("itemFound", (m: { id: string }) => this.showItemFound(m.id));
+    this.room.onMessage("treasureOpened", (m: { itemId: string; gold: number }) => this.showTreasureOpened(m.itemId, m.gold));
     this.room.onMessage("achievement", (m: { id: string; desc: string; cardId: number | null }) => this.showAchievement(m));
     this.room.onMessage("chat", (m: { name: string; text: string }) => this.addChatLine(`${m.name}: ${m.text}`));
   }
@@ -521,6 +532,46 @@ export class MmoGameScene extends Phaser.Scene {
     this.spawnStarBurst(c.x, c.y); // 拾得演出
     c.destroy();
     this.relicViews.delete(id);
+  }
+
+  // --- フィールドの宝箱 ---
+
+  private addTreasureView(id: string, t: any) {
+    const cont = this.add.container(t.x, t.y);
+    const glow = this.add.circle(0, 0, 18, 0xffcf66, 0.22);
+    const box = this.add.text(0, 0, "📦", { fontSize: "30px" }).setOrigin(0.5);
+    cont.add([glow, box]);
+    cont.setDepth(t.y);
+    this.worldLayer.add(cont);
+    this.tweens.add({ targets: box, y: -5, duration: 800, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
+    this.tweens.add({ targets: glow, alpha: { from: 0.12, to: 0.36 }, scale: { from: 0.85, to: 1.2 }, duration: 1000, yoyo: true, repeat: -1 });
+    this.treasureViews.set(id, cont);
+  }
+
+  private removeTreasureView(id: string) {
+    const c = this.treasureViews.get(id);
+    if (!c) return;
+    this.spawnStarBurst(c.x, c.y); // 開封演出
+    c.destroy();
+    this.treasureViews.delete(id);
+  }
+
+  // 宝箱を開けた本人へのポップアップ（バフ薬＋ゴールド）。
+  private showTreasureOpened(itemId: string, gold: number) {
+    const meta = ITEM_META[itemId];
+    const cont = this.add.container(this.scale.width / 2, 200).setScrollFactor(0).setDepth(5200);
+    this.uiLayer.add(cont);
+    const bg = this.add.rectangle(0, 0, 320, 84, 0x1a1530, 0.97).setStrokeStyle(3, 0xffcf66);
+    const title = this.add.text(0, -22, "📦 宝箱を開けた！", { fontSize: "17px", color: "#ffcf66", fontStyle: "bold" }).setOrigin(0.5);
+    const body = this.add.text(0, 8, `${meta?.icon ?? "🧪"} ${meta?.name ?? itemId}  ＋  🪙${gold}`, { fontSize: "16px", color: "#ece7f5" }).setOrigin(0.5);
+    cont.add([bg, title, body]);
+    cont.setAlpha(0).setScale(0.85);
+    this.tweens.add({ targets: cont, alpha: 1, scale: 1, duration: 240, ease: "Back.easeOut" });
+    sfxScore();
+    this.time.delayedCall(2600, () => {
+      if (!cont.active) return;
+      this.tweens.add({ targets: cont, alpha: 0, y: 180, duration: 300, onComplete: () => cont.destroy() });
+    });
   }
 
   // --- エリア移動ゲート ---
@@ -730,6 +781,7 @@ export class MmoGameScene extends Phaser.Scene {
 
   private openShop() {
     if (this.overlayOpen()) return;
+    this.shopTab = "buy";
     const layer = this.add.container(0, 0).setScrollFactor(0).setDepth(7000);
     this.uiLayer.add(layer);
     this.shopLayer = layer;
@@ -755,25 +807,62 @@ export class MmoGameScene extends Phaser.Scene {
     const close = T(px + pw - 28, py + ph - 30, "✕ 閉じる (Esc / E)", 14, "#cccccc").setOrigin(1, 0).setInteractive({ useHandCursor: true });
     close.on("pointerdown", () => this.closeShop());
 
-    const rowH = 64, listX = px + 28, listW = pw - 56, top = py + 70;
-    SHOP_ITEMS.forEach((s, i) => {
-      const meta = ITEM_META[s.id];
-      const owned = (me?.items?.get(s.id) ?? 0) as number;
-      const ry = top + i * (rowH + 12);
-      layer.add(this.add.rectangle(listX, ry, listW, rowH, 0x1c1530, 0.85).setOrigin(0, 0).setStrokeStyle(1, 0x3a3550));
-      T(listX + 18, ry + rowH / 2, meta?.icon ?? "🧪", 30, "#ffffff").setOrigin(0, 0.5);
-      T(listX + 64, ry + 14, `${meta?.name ?? s.id}`, 17, "#ece7f5", true);
-      T(listX + 64, ry + 40, `${meta?.desc ?? ""}　／　所持 ×${owned}`, 13, "#bdb6d0");
-      // 価格＋購入ボタン
-      const canBuy = (me?.gold ?? 0) >= s.price;
-      const btnW = 130, btnX = listX + listW - btnW - 12, btnY = ry + rowH / 2;
-      const btn = this.add.rectangle(btnX, btnY, btnW, 40, canBuy ? 0x2f7d4f : 0x3a3550).setOrigin(0, 0.5)
-        .setStrokeStyle(1, canBuy ? 0x57c084 : 0x4a4360);
-      if (canBuy) btn.setInteractive({ useHandCursor: true }).on("pointerdown", () => this.buyItem(s.id));
-      layer.add(btn);
-      T(btnX + btnW / 2, btnY, `🪙${s.price} 購入`, 15, canBuy ? "#ffffff" : "#7a7390", true).setOrigin(0.5);
+    // 購入/売却タブ
+    const tabs: Array<["buy" | "sell", string]> = [["buy", "購入"], ["sell", "売却"]];
+    tabs.forEach(([key, label], i) => {
+      const tw = 96, tx = px + 28 + i * (tw + 8), ty = py + 56;
+      const on = this.shopTab === key;
+      const tab = this.add.rectangle(tx, ty, tw, 32, on ? 0x3a2f5a : 0x1c1530, 0.95).setOrigin(0, 0)
+        .setStrokeStyle(1, on ? 0x8a7ab5 : 0x3a3550).setInteractive({ useHandCursor: true });
+      tab.on("pointerdown", () => { this.shopTab = key; this.drawShop(); });
+      layer.add(tab);
+      T(tx + tw / 2, ty + 16, label, 15, on ? "#ece7f5" : "#9b93b0", on).setOrigin(0.5);
     });
-    T(cx, py + ph - 30, "ゴールドは討伐で貯まる", 12, "#6a6285").setOrigin(0.5);
+
+    const rowH = 56, listX = px + 28, listW = pw - 56, top = py + 100;
+    if (this.shopTab === "buy") {
+      SHOP_ITEMS.forEach((s, i) => {
+        const meta = ITEM_META[s.id];
+        const owned = (me?.items?.get(s.id) ?? 0) as number;
+        const ry = top + i * (rowH + 12);
+        layer.add(this.add.rectangle(listX, ry, listW, rowH, 0x1c1530, 0.85).setOrigin(0, 0).setStrokeStyle(1, 0x3a3550));
+        T(listX + 18, ry + rowH / 2, meta?.icon ?? "🧪", 28, "#ffffff").setOrigin(0, 0.5);
+        T(listX + 64, ry + 12, `${meta?.name ?? s.id}`, 17, "#ece7f5", true);
+        T(listX + 64, ry + 36, `${meta?.desc ?? ""}　／　所持 ×${owned}`, 13, "#bdb6d0");
+        const canBuy = (me?.gold ?? 0) >= s.price;
+        const btnW = 130, btnX = listX + listW - btnW - 12, btnY = ry + rowH / 2;
+        const btn = this.add.rectangle(btnX, btnY, btnW, 38, canBuy ? 0x2f7d4f : 0x3a3550).setOrigin(0, 0.5)
+          .setStrokeStyle(1, canBuy ? 0x57c084 : 0x4a4360);
+        if (canBuy) btn.setInteractive({ useHandCursor: true }).on("pointerdown", () => this.buyItem(s.id));
+        layer.add(btn);
+        T(btnX + btnW / 2, btnY, `🪙${s.price} 購入`, 15, canBuy ? "#ffffff" : "#7a7390", true).setOrigin(0.5);
+      });
+      T(cx, py + ph - 30, "ゴールドは討伐で貯まる", 12, "#6a6285").setOrigin(0.5);
+    } else {
+      // 売却：所持している売却可能アイテムを一覧
+      const owned = ITEM_ORDER.filter((id) => SELL_PRICES[id] != null && (me?.items?.get(id) ?? 0) > 0);
+      if (owned.length === 0) {
+        T(cx, top + 40, "売却できるアイテムを持っていません", 14, "#6a6285").setOrigin(0.5);
+      } else {
+        owned.forEach((id, i) => {
+          const meta = ITEM_META[id];
+          const n = (me?.items?.get(id) ?? 0) as number;
+          const price = SELL_PRICES[id];
+          const ry = top + i * (rowH + 10);
+          layer.add(this.add.rectangle(listX, ry, listW, rowH, 0x1c1530, 0.85).setOrigin(0, 0).setStrokeStyle(1, 0x3a3550));
+          T(listX + 18, ry + rowH / 2, meta?.icon ?? "❔", 28, "#ffffff").setOrigin(0, 0.5);
+          T(listX + 64, ry + 12, `${meta?.name ?? id}`, 17, "#ece7f5", true);
+          T(listX + 64, ry + 36, `${meta?.desc ?? ""}　／　所持 ×${n}`, 13, "#bdb6d0");
+          const btnW = 130, btnX = listX + listW - btnW - 12, btnY = ry + rowH / 2;
+          const btn = this.add.rectangle(btnX, btnY, btnW, 38, 0x7d5a2f).setOrigin(0, 0.5).setStrokeStyle(1, 0xc0894f)
+            .setInteractive({ useHandCursor: true });
+          btn.on("pointerdown", () => this.sellItem(id));
+          layer.add(btn);
+          T(btnX + btnW / 2, btnY, `🪙${price} 売却`, 15, "#ffffff", true).setOrigin(0.5);
+        });
+      }
+      T(cx, py + ph - 30, "不要なアイテムをゴールドに換える", 12, "#6a6285").setOrigin(0.5);
+    }
   }
 
   private buyItem(id: string) {
@@ -781,6 +870,14 @@ export class MmoGameScene extends Phaser.Scene {
     const shop = SHOP_ITEMS.find((s) => s.id === id);
     if (!shop || (me?.gold ?? 0) < shop.price) return;
     this.room.send("buyItem", { id });
+    sfxScore();
+    this.time.delayedCall(160, () => { if (this.shopLayer) this.drawShop(); });
+  }
+
+  private sellItem(id: string) {
+    const me: any = (this.room.state as any).players.get(this.myId);
+    if (SELL_PRICES[id] == null || (me?.items?.get(id) ?? 0) <= 0) return;
+    this.room.send("sellItem", { id });
     sfxScore();
     this.time.delayedCall(160, () => { if (this.shopLayer) this.drawShop(); });
   }
@@ -939,14 +1036,14 @@ export class MmoGameScene extends Phaser.Scene {
     if (me && now < (me.buffAtkUntil ?? 0)) buffs.push(`💪攻撃UP ${Math.ceil((me.buffAtkUntil - now) / 1000)}s`);
     if (me && now < (me.buffSpeedUntil ?? 0)) buffs.push(`👟速度UP ${Math.ceil((me.buffSpeedUntil - now) / 1000)}s`);
     const rows: Array<[string, string]> = me
-      ? [["攻撃力", `${me.atk}`], ["討伐数", `${me.kills ?? 0}`], ["ゴールド", `🪙 ${me.gold ?? 0}`],
+      ? [["攻撃力", `${me.atk}`], ["防御力", `${me.def ?? 0}`], ["討伐数", `${me.kills ?? 0}`], ["ゴールド", `🪙 ${me.gold ?? 0}`],
          ["プレイ時間", fmtTime(me.playSec)], ["効果中", buffs.length ? buffs.join("  ") : "なし"]]
       : [["", "（世界に入ると表示）"]];
     rows.forEach((r, i) => {
       this.sTxt(c, colLX, statY + i * 28, r[0], 15, "#bdb6d0");
       this.sTxt(c, colLX + colW, statY + i * 28, r[1], 15, buffs.length && r[0] === "効果中" ? "#7ee787" : "#ffffff", true).setOrigin(1, 0);
     });
-    const achY = statY + 150;
+    const achY = statY + 178;
     header(colLX, achY, "▸ 達成課題");
 
     // 右：蒐集進捗＋アカウント
@@ -1018,7 +1115,7 @@ export class MmoGameScene extends Phaser.Scene {
     if (owned.length === 0) {
       this.sRect(c, x0, listY + rowH, listW, ph - (listY + rowH - py) - 40, 0x120e1e).setOrigin(0, 0).setStrokeStyle(1, 0x3a3550);
       this.sTxt(c, x0 + listW / 2, listY + rowH + 60, "所持しているアイテムはありません", 14, "#6a6285").setOrigin(0.5);
-      this.sTxt(c, x0 + listW / 2, listY + rowH + 86, "回復薬はショップ（今後実装）／バフ薬は討伐でドロップ", 12, "#544c6a").setOrigin(0.5);
+      this.sTxt(c, x0 + listW / 2, listY + rowH + 86, "回復薬は町のショップ／バフ薬・巻物は討伐でドロップ", 12, "#544c6a").setOrigin(0.5);
       return;
     }
     owned.forEach((id, i) => {
@@ -1031,7 +1128,7 @@ export class MmoGameScene extends Phaser.Scene {
       row.on("pointerout", () => row.setFillStyle(0x1c1530, 0.6));
       row.on("pointerdown", () => this.useItem(id));
       this.sTxt(c, x0 + pad + 8, ry + rowH / 2, meta?.icon ?? "❔", 22, "#ffffff").setOrigin(0, 0.5);
-      this.sTxt(c, x0 + 60, ry + rowH / 2, `${i + 1}. ${meta?.name ?? id}`, 15, "#ece7f5").setOrigin(0, 0.5);
+      this.sTxt(c, x0 + 60, ry + rowH / 2, `${i < 4 ? `${i + 1}. ` : ""}${meta?.name ?? id}`, 15, "#ece7f5").setOrigin(0, 0.5);
       this.sTxt(c, x0 + listW * 0.46, ry + rowH / 2, meta?.desc ?? "", 13, "#bdb6d0").setOrigin(0, 0.5);
       this.sTxt(c, x0 + listW - pad, ry + rowH / 2, `×${n}`, 15, "#ffffff", true).setOrigin(1, 0.5);
     });
@@ -1353,7 +1450,7 @@ export class MmoGameScene extends Phaser.Scene {
       }
     }
 
-    // ゲート／ショップ近接判定（近づくと [E] プロンプト）
+    // ゲート／ショップ／宝箱 近接判定（近づくと [E] プロンプト）
     if (me && !this.overlayOpen() && !me.dead) {
       let near: { toArea: string; label: string } | null = null;
       for (const g of this.gates) {
@@ -1361,12 +1458,22 @@ export class MmoGameScene extends Phaser.Scene {
       }
       this.nearGate = near;
       this.nearShop = !near && !!this.shopPos && Math.hypot(me.x - this.shopPos.x, me.y - this.shopPos.y) <= 90;
+      this.nearTreasure = null;
+      if (!near && !this.nearShop) {
+        let bestD = 44;
+        this.treasureViews.forEach((c, id) => {
+          const d = Math.hypot(me.x - c.x, me.y - c.y);
+          if (d <= bestD) { bestD = d; this.nearTreasure = id; }
+        });
+      }
       if (near) this.gatePrompt?.setText(`[E] ${near.label}`).setVisible(true);
       else if (this.nearShop) this.gatePrompt?.setText("[E] ショップ").setVisible(true);
+      else if (this.nearTreasure) this.gatePrompt?.setText("[E] 宝箱を開ける").setVisible(true);
       else this.gatePrompt?.setVisible(false);
     } else {
       this.nearGate = null;
       this.nearShop = false;
+      this.nearTreasure = null;
       this.gatePrompt?.setVisible(false);
     }
   }
