@@ -26,6 +26,10 @@ const ACHIEVEMENTS: Achv[] = [
   { id: "level10",  type: "level",     need: 10,   desc: "レベル10到達",      rareBias: 0.3 },
   { id: "level20",  type: "level",     need: 20,   desc: "レベル20到達",      rareBias: 0.6 },
   { id: "apex",     type: "collected", need: 42,   desc: "非秘宝42種を集めし者（秘宝を授かる）", legend: true },
+  // 頂点課題（legend faucet）。やり込み系の到達で在庫から秘宝を授与。
+  { id: "kill3000", type: "kills",     need: 3000,  desc: "魔物を3000体討伐せし者（秘宝を授かる）", legend: true },
+  { id: "level30",  type: "level",     need: 30,    desc: "レベル30到達（秘宝を授かる）",          legend: true },
+  { id: "play10h",  type: "playSec",   need: 36000, desc: "10時間プレイせし者（秘宝を授かる）",      legend: true },
 ];
 
 const TICK_RATE = 30;
