@@ -10,6 +10,7 @@ import { makeInput } from "../../ui/nameInput";
 import { fetchCards, fetchMyCards, type Card } from "../../spirit";
 import { CARD_ICON, CARD_DESC, RARITY_META, RELIC_IMAGE_NAMES, relicTexKey } from "../spirit/cards-meta";
 import { ITEM_META, ITEM_ORDER, SPEED_BUFF_MUL, SHOP_ITEMS, SELL_PRICES } from "../spirit/items-meta";
+import { EQUIP_META, SLOTS, EQUIP_SHOP, EQUIP_SELL } from "../spirit/equip-meta";
 import { ACHIEVEMENTS } from "../spirit/achievements";
 import { getMyProfile, getUser } from "../../auth";
 import { joinPublicRoom } from "../../net";
@@ -92,7 +93,7 @@ export class MmoGameScene extends Phaser.Scene {
   private shopPos?: { x: number; y: number }; // 町のショップ地点（近接でE）
   private nearShop = false;
   private shopLayer?: Phaser.GameObjects.Container;
-  private shopTab: "buy" | "sell" = "buy";
+  private shopTab: "buy" | "equip" | "sell" = "buy";
   private traveling = false;
   private chatOpen = false;
   private chatInput?: HTMLInputElement;
@@ -486,6 +487,7 @@ export class MmoGameScene extends Phaser.Scene {
     void fetchCards().then((cs) => { this.cardById = new Map(cs.map((c) => [c.id, c])); }).catch(() => {});
     this.room.onMessage("relicFound", (m: { cardId: number }) => this.showRelicFound(m.cardId));
     this.room.onMessage("itemFound", (m: { id: string }) => this.showItemFound(m.id));
+    this.room.onMessage("equipFound", (m: { id: string }) => this.showEquipFound(m.id));
     this.room.onMessage("treasureOpened", (m: { itemId: string; gold: number }) => this.showTreasureOpened(m.itemId, m.gold));
     this.room.onMessage("achievement", (m: { id: string; desc: string; cardId: number | null }) => this.showAchievement(m));
     this.room.onMessage("chat", (m: { name: string; text: string }) => this.addChatLine(`${m.name}: ${m.text}`));
@@ -772,6 +774,27 @@ export class MmoGameScene extends Phaser.Scene {
     if (this.statusLayer && this.statusTab === "items") this.drawStatusTab();
   }
 
+  // 装備入手ポップアップ（討伐ドロップ時）
+  private showEquipFound(id: string) {
+    const meta = EQUIP_META[id];
+    const cx = this.scale.width / 2;
+    const cont = this.add.container(cx, 150).setScrollFactor(0).setDepth(5000);
+    this.uiLayer.add(cont);
+    const bg = this.add.rectangle(0, 0, 320, 84, 0x15101f, 0.96).setStrokeStyle(3, 0xe8c87e);
+    const icon = this.add.text(-128, 0, meta?.icon ?? "⚔️", { fontSize: "40px" }).setOrigin(0.5);
+    const title = this.add.text(-92, -16, "⚔️ 装備入手！", { fontSize: "15px", color: "#e8c87e", fontStyle: "bold" }).setOrigin(0, 0.5);
+    const name = this.add.text(-92, 14, meta?.name ?? id, { fontSize: "20px", color: "#ece7f5", fontStyle: "bold" }).setOrigin(0, 0.5);
+    cont.add([bg, icon, title, name]);
+    cont.setAlpha(0).setScale(0.85);
+    this.tweens.add({ targets: cont, alpha: 1, scale: 1, duration: 250, ease: "Back.easeOut" });
+    sfxScore();
+    this.time.delayedCall(2400, () => {
+      if (!cont.active) return;
+      this.tweens.add({ targets: cont, alpha: 0, y: 130, duration: 300, onComplete: () => cont.destroy() });
+    });
+    if (this.statusLayer && this.statusTab === "equip") this.drawStatusTab();
+  }
+
   // --- ショップ（町でEキー。ゴールドで回復薬を購入）---
 
   private closeShop() {
@@ -807,8 +830,8 @@ export class MmoGameScene extends Phaser.Scene {
     const close = T(px + pw - 28, py + ph - 30, "✕ 閉じる (Esc / E)", 14, "#cccccc").setOrigin(1, 0).setInteractive({ useHandCursor: true });
     close.on("pointerdown", () => this.closeShop());
 
-    // 購入/売却タブ
-    const tabs: Array<["buy" | "sell", string]> = [["buy", "購入"], ["sell", "売却"]];
+    // 購入/装備/売却タブ
+    const tabs: Array<["buy" | "equip" | "sell", string]> = [["buy", "購入"], ["equip", "装備"], ["sell", "売却"]];
     tabs.forEach(([key, label], i) => {
       const tw = 96, tx = px + 28 + i * (tw + 8), ty = py + 56;
       const on = this.shopTab === key;
@@ -838,36 +861,57 @@ export class MmoGameScene extends Phaser.Scene {
         T(btnX + btnW / 2, btnY, `🪙${s.price} 購入`, 15, canBuy ? "#ffffff" : "#7a7390", true).setOrigin(0.5);
       });
       T(cx, py + ph - 30, "ゴールドは討伐で貯まる", 12, "#6a6285").setOrigin(0.5);
+    } else if (this.shopTab === "equip") {
+      // 装備購入：EQUIP_SHOP を一覧。購入で gear（未装備の所持）へ。
+      const eqRowH = 50;
+      EQUIP_SHOP.forEach((s, i) => {
+        const meta = EQUIP_META[s.id];
+        const owned = (me?.gear?.get(s.id) ?? 0) as number;
+        const ry = top + i * (eqRowH + 8);
+        layer.add(this.add.rectangle(listX, ry, listW, eqRowH, 0x1c1530, 0.85).setOrigin(0, 0).setStrokeStyle(1, 0x3a3550));
+        T(listX + 18, ry + eqRowH / 2, meta?.icon ?? "⚔️", 26, "#ffffff").setOrigin(0, 0.5);
+        T(listX + 60, ry + 10, `${meta?.name ?? s.id}`, 16, "#ece7f5", true);
+        T(listX + 60, ry + 32, `${meta?.desc ?? ""}　／　所持 ×${owned}`, 12, "#bdb6d0");
+        const canBuy = (me?.gold ?? 0) >= s.price;
+        const btnW = 124, btnX = listX + listW - btnW - 12, btnY = ry + eqRowH / 2;
+        const btn = this.add.rectangle(btnX, btnY, btnW, 36, canBuy ? 0x2f7d4f : 0x3a3550).setOrigin(0, 0.5)
+          .setStrokeStyle(1, canBuy ? 0x57c084 : 0x4a4360);
+        if (canBuy) btn.setInteractive({ useHandCursor: true }).on("pointerdown", () => this.buyItem(s.id));
+        layer.add(btn);
+        T(btnX + btnW / 2, btnY, `🪙${s.price} 購入`, 14, canBuy ? "#ffffff" : "#7a7390", true).setOrigin(0.5);
+      });
+      T(cx, py + ph - 30, "購入した装備は ステータス画面(C)の装備タブで装着", 12, "#6a6285").setOrigin(0.5);
     } else {
-      // 売却：所持している売却可能アイテムを一覧
-      const owned = ITEM_ORDER.filter((id) => SELL_PRICES[id] != null && (me?.items?.get(id) ?? 0) > 0);
+      // 売却：所持している売却可能アイテム＋未装備の装備を一覧
+      const ownedItems = ITEM_ORDER.filter((id) => SELL_PRICES[id] != null && (me?.items?.get(id) ?? 0) > 0)
+        .map((id) => ({ id, n: (me?.items?.get(id) ?? 0) as number, price: SELL_PRICES[id], meta: ITEM_META[id] }));
+      const ownedGear = Object.keys(EQUIP_META).filter((id) => EQUIP_SELL[id] != null && (me?.gear?.get(id) ?? 0) > 0)
+        .map((id) => ({ id, n: (me?.gear?.get(id) ?? 0) as number, price: EQUIP_SELL[id], meta: EQUIP_META[id] }));
+      const owned = [...ownedItems, ...ownedGear];
       if (owned.length === 0) {
         T(cx, top + 40, "売却できるアイテムを持っていません", 14, "#6a6285").setOrigin(0.5);
       } else {
-        owned.forEach((id, i) => {
-          const meta = ITEM_META[id];
-          const n = (me?.items?.get(id) ?? 0) as number;
-          const price = SELL_PRICES[id];
+        owned.forEach((o, i) => {
           const ry = top + i * (rowH + 10);
           layer.add(this.add.rectangle(listX, ry, listW, rowH, 0x1c1530, 0.85).setOrigin(0, 0).setStrokeStyle(1, 0x3a3550));
-          T(listX + 18, ry + rowH / 2, meta?.icon ?? "❔", 28, "#ffffff").setOrigin(0, 0.5);
-          T(listX + 64, ry + 12, `${meta?.name ?? id}`, 17, "#ece7f5", true);
-          T(listX + 64, ry + 36, `${meta?.desc ?? ""}　／　所持 ×${n}`, 13, "#bdb6d0");
+          T(listX + 18, ry + rowH / 2, o.meta?.icon ?? "❔", 28, "#ffffff").setOrigin(0, 0.5);
+          T(listX + 64, ry + 12, `${o.meta?.name ?? o.id}`, 17, "#ece7f5", true);
+          T(listX + 64, ry + 36, `${o.meta?.desc ?? ""}　／　所持 ×${o.n}`, 13, "#bdb6d0");
           const btnW = 130, btnX = listX + listW - btnW - 12, btnY = ry + rowH / 2;
           const btn = this.add.rectangle(btnX, btnY, btnW, 38, 0x7d5a2f).setOrigin(0, 0.5).setStrokeStyle(1, 0xc0894f)
             .setInteractive({ useHandCursor: true });
-          btn.on("pointerdown", () => this.sellItem(id));
+          btn.on("pointerdown", () => this.sellItem(o.id));
           layer.add(btn);
-          T(btnX + btnW / 2, btnY, `🪙${price} 売却`, 15, "#ffffff", true).setOrigin(0.5);
+          T(btnX + btnW / 2, btnY, `🪙${o.price} 売却`, 15, "#ffffff", true).setOrigin(0.5);
         });
       }
-      T(cx, py + ph - 30, "不要なアイテムをゴールドに換える", 12, "#6a6285").setOrigin(0.5);
+      T(cx, py + ph - 30, "不要なアイテム・装備をゴールドに換える", 12, "#6a6285").setOrigin(0.5);
     }
   }
 
   private buyItem(id: string) {
     const me: any = (this.room.state as any).players.get(this.myId);
-    const shop = SHOP_ITEMS.find((s) => s.id === id);
+    const shop = SHOP_ITEMS.find((s) => s.id === id) ?? EQUIP_SHOP.find((s) => s.id === id);
     if (!shop || (me?.gold ?? 0) < shop.price) return;
     this.room.send("buyItem", { id });
     sfxScore();
@@ -876,7 +920,9 @@ export class MmoGameScene extends Phaser.Scene {
 
   private sellItem(id: string) {
     const me: any = (this.room.state as any).players.get(this.myId);
-    if (SELL_PRICES[id] == null || (me?.items?.get(id) ?? 0) <= 0) return;
+    const isEquip = EQUIP_SELL[id] != null;
+    const have = isEquip ? (me?.gear?.get(id) ?? 0) : (me?.items?.get(id) ?? 0);
+    if ((isEquip ? EQUIP_SELL[id] : SELL_PRICES[id]) == null || have <= 0) return;
     this.room.send("sellItem", { id });
     sfxScore();
     this.time.delayedCall(160, () => { if (this.shopLayer) this.drawShop(); });
@@ -1143,18 +1189,77 @@ export class MmoGameScene extends Phaser.Scene {
 
   private drawEquipTab(c: Phaser.GameObjects.Container, p: { px: number; py: number; pw: number; ph: number }) {
     const { px, py, pw } = p;
-    const x0 = px + 40, top = py + 78;
+    const x0 = px + 40, top = py + 78, listW = pw - 80;
+    const me: any = (this.room.state as any).players.get(this.myId);
     this.sTxt(c, x0, top, "▸ 装備", 17, "#7ee787", true);
-    this.sRect(c, x0, top + 26, pw - 80, 2, 0x4a4360).setOrigin(0, 0.5);
-    this.sTxt(c, x0, top + 36, "武器・防具・装飾を装備（今後実装）", 13, "#9b93b0");
-    // 装備スロット（ラベル付き枠）を2行で配置
-    const slots = ["武器", "盾", "頭", "鎧", "護符", "指輪"];
-    const cols = 3, s = 92, gapX = 60, gapY = 56;
-    const gx = x0 + s / 2 + 20, gy = top + 110 + s / 2;
-    slots.forEach((label, i) => {
+    this.sTxt(c, x0 + listW, top + 2, `🪙 ${me?.gold ?? 0}`, 16, "#ffd966", true).setOrigin(1, 0);
+    this.sRect(c, x0, top + 26, listW, 2, 0x4a4360).setOrigin(0, 0.5);
+    this.sTxt(c, x0, top + 36, "下の所持装備をクリックで装備／スロットをクリックで外す", 12, "#9b93b0");
+
+    // 装備スロット（2行×3列）。装備中はアイコン＋名称を表示し、クリックで解除。
+    const cols = 3, s = 76, gapY = 46;
+    const gapX = (listW - cols * s) / (cols - 1);
+    const gx = x0 + s / 2, gy = top + 92 + s / 2;
+    SLOTS.forEach((slot, i) => {
       const col = i % cols, row = Math.floor(i / cols);
-      this.slot(c, gx + col * (s + gapX), gy + row * (s + gapY), s, label);
+      const cxp = gx + col * (s + gapX), cyp = gy + row * (s + gapY);
+      const equippedId = me?.equip?.get(slot.key) as string | undefined;
+      const meta = equippedId ? EQUIP_META[equippedId] : undefined;
+      const filled = !!meta;
+      const box = this.add.rectangle(cxp, cyp, s, s, filled ? 0x2a2150 : 0x221b34)
+        .setStrokeStyle(2, filled ? 0x8a7ab5 : 0x4a4360);
+      c.add(box);
+      if (filled) {
+        box.setInteractive({ useHandCursor: true });
+        box.on("pointerover", () => box.setFillStyle(0x3a2f5a));
+        box.on("pointerout", () => box.setFillStyle(0x2a2150));
+        box.on("pointerdown", () => this.unequipItem(slot.key));
+        this.sTxt(c, cxp, cyp - 4, meta!.icon, 30, "#ffffff").setOrigin(0.5);
+        this.sTxt(c, cxp, cyp + s / 2 + 12, meta!.name, 11, "#ece7f5").setOrigin(0.5);
+      } else {
+        this.sTxt(c, cxp, cyp + s / 2 + 12, slot.label, 12, "#9b93b0").setOrigin(0.5);
+      }
     });
+
+    // 所持装備（未装備）一覧。クリックで装備。
+    const listY = gy + s / 2 + gapY + s + 30;
+    this.sTxt(c, x0, listY, "▸ 所持装備（クリックで装備）", 14, "#7ee787", true);
+    this.sRect(c, x0, listY + 22, listW, 2, 0x4a4360).setOrigin(0, 0.5);
+    const owned = Object.keys(EQUIP_META).filter((id) => (me?.gear?.get(id) ?? 0) > 0);
+    if (owned.length === 0) {
+      this.sTxt(c, x0, listY + 40, "所持している装備はありません", 13, "#6a6285");
+      this.sTxt(c, x0, listY + 62, "装備は町のショップ（装備タブ）で購入できます", 12, "#544c6a");
+      return;
+    }
+    const rowH = 38, pad = 14;
+    owned.forEach((id, i) => {
+      const meta = EQUIP_META[id]; const n = me.gear.get(id) as number;
+      const ry = listY + 38 + i * (rowH + 6);
+      const rowMid = ry + rowH / 2;
+      const row = this.add.rectangle(x0, ry, listW, rowH, 0x1c1530, 0.6).setOrigin(0, 0)
+        .setStrokeStyle(1, 0x3a3550).setInteractive({ useHandCursor: true });
+      c.add(row);
+      row.on("pointerover", () => row.setFillStyle(0x2a2150, 0.9));
+      row.on("pointerout", () => row.setFillStyle(0x1c1530, 0.6));
+      row.on("pointerdown", () => this.equipItem(id));
+      this.sTxt(c, x0 + pad + 4, rowMid, meta?.icon ?? "❔", 20, "#ffffff").setOrigin(0, 0.5);
+      this.sTxt(c, x0 + 52, rowMid, meta?.name ?? id, 14, "#ece7f5").setOrigin(0, 0.5);
+      this.sTxt(c, x0 + listW * 0.42, rowMid, meta?.desc ?? "", 12, "#bdb6d0").setOrigin(0, 0.5);
+      this.sTxt(c, x0 + listW - pad, rowMid, `×${n}`, 14, "#ffffff", true).setOrigin(1, 0.5);
+    });
+  }
+
+  // 装備をサーバーへ依頼し、少し後に画面を更新
+  private equipItem(id: string) {
+    if ((((this.room.state as any).players.get(this.myId)?.gear?.get(id)) ?? 0) <= 0) return;
+    this.room.send("equipItem", { id });
+    this.time.delayedCall(160, () => { if (this.statusLayer) this.drawStatusTab(); });
+  }
+
+  private unequipItem(slot: string) {
+    if (!((this.room.state as any).players.get(this.myId)?.equip?.get(slot))) return;
+    this.room.send("unequipItem", { slot });
+    this.time.delayedCall(160, () => { if (this.statusLayer) this.drawStatusTab(); });
   }
 
   private drawOtherTab(c: Phaser.GameObjects.Container, p: { px: number; py: number; pw: number; ph: number }) {

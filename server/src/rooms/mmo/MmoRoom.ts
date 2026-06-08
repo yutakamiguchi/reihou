@@ -139,6 +139,37 @@ function pickDropItem(): string {
   return DROP_ITEMS[0]?.[0] ?? "elixir_atk";
 }
 
+// --- 装備 ---
+// アイテムに準じる無限供給（霊宝の保存則 INV-1〜6 とは無関係）。
+// 装備すると slot を占有し、atk/def/maxHp を加算する。
+type EquipSlot = "weapon" | "shield" | "head" | "armor" | "amulet" | "ring";
+interface EquipDef {
+  id: string; name: string; slot: EquipSlot;
+  atk?: number; def?: number; maxHp?: number;
+  price?: number;       // ショップ価格
+  sell?: number;        // 売却額
+  dropWeight?: number;  // mobドロップの重み
+}
+const EQUIP: Record<string, EquipDef> = {
+  sword_wood:   { id: "sword_wood",   name: "木の剣",     slot: "weapon", atk: 3,          price: 60,  sell: 24 },
+  sword_iron:   { id: "sword_iron",   name: "鉄の剣",     slot: "weapon", atk: 8,          price: 200, sell: 80, dropWeight: 1 },
+  shield_wood:  { id: "shield_wood",  name: "木の盾",     slot: "shield", def: 2,          price: 60,  sell: 24 },
+  armor_leather:{ id: "armor_leather",name: "革の鎧",     slot: "armor",  def: 2, maxHp: 20, price: 120, sell: 48 },
+  amulet_vigor: { id: "amulet_vigor", name: "活力の護符", slot: "amulet", maxHp: 40,       price: 150, sell: 60, dropWeight: 1 },
+  ring_power:   { id: "ring_power",   name: "力の指輪",   slot: "ring",   atk: 5,          price: 180, sell: 72, dropWeight: 1 },
+};
+// 討伐による装備の低確率ドロップ（dropWeight>0 を重み付き抽選）
+const EQUIP_DROP_CHANCE = 0.005;
+const EQUIP_DROP_ITEMS: Array<[string, number]> = Object.values(EQUIP)
+  .filter((e) => e.dropWeight && e.dropWeight > 0)
+  .map((e) => [e.id, e.dropWeight as number]);
+function pickDropEquip(): string {
+  const total = EQUIP_DROP_ITEMS.reduce((s, [, w]) => s + w, 0);
+  let r = Math.random() * total;
+  for (const [id, w] of EQUIP_DROP_ITEMS) { r -= w; if (r <= 0) return id; }
+  return EQUIP_DROP_ITEMS[0]?.[0] ?? "sword_iron";
+}
+
 interface InputState {
   up: boolean; down: boolean; left: boolean; right: boolean;
   attackQueued: boolean; lastAttackAt: number;
@@ -235,6 +266,16 @@ export class MmoRoom extends Room<MmoState> {
       this.openTreasure(client.sessionId, message?.id ?? "");
     });
 
+    // 装備を装着（所持ギアをスロットへ）
+    this.onMessage("equipItem", (client, message: { id?: string }) => {
+      this.equipItem(client.sessionId, message?.id ?? "");
+    });
+
+    // 装備を外す（スロット指定で所持ギアへ戻す）
+    this.onMessage("unequipItem", (client, message: { slot?: string }) => {
+      this.unequipItem(client.sessionId, message?.slot ?? "");
+    });
+
     this.setSimulationInterval((dt) => this.update(dt), 1000 / TICK_RATE);
     this.lastTick = Date.now();
   }
@@ -281,7 +322,18 @@ export class MmoRoom extends Room<MmoState> {
           p.exp = typeof s.exp === "number" ? s.exp : 0;
           p.nextExp = nextExpFor(p.level);
         }
-        this.recalcStats(p, true); // レベル＋巻物ボーナスから atk/maxHp/def を再計算
+        // 装備（未装備の所持＋装備中スロット）を recalcStats の前に復元
+        if (s.gear && typeof s.gear === "object") {
+          for (const [k, v] of Object.entries(s.gear)) {
+            if (EQUIP[k] && typeof v === "number" && v > 0) p.gear.set(k, v);
+          }
+        }
+        if (s.equip && typeof s.equip === "object") {
+          for (const [slot, id] of Object.entries(s.equip)) {
+            if (typeof id === "string" && EQUIP[id] && EQUIP[id].slot === slot) p.equip.set(slot, id);
+          }
+        }
+        this.recalcStats(p, true); // レベル＋巻物＋装備ボーナスから atk/maxHp/def を再計算
         p.kills = typeof s.kills === "number" ? s.kills : 0;
         basePlaySec = typeof s.playSec === "number" ? s.playSec : 0;
         claimed = Array.isArray(s.claimed) ? s.claimed : [];
@@ -326,6 +378,7 @@ export class MmoRoom extends Room<MmoState> {
       level: p.level, exp: p.exp, kills: p.kills, playSec: p.playSec,
       claimed: rt ? [...rt.claimed] : [],
       gold: p.gold, items: Object.fromEntries(p.items.entries()),
+      gear: Object.fromEntries(p.gear.entries()), equip: Object.fromEntries(p.equip.entries()),
       bonusAtk: p.bonusAtk, bonusDef: p.bonusDef, bonusMaxHp: p.bonusMaxHp,
     });
   }
@@ -769,6 +822,7 @@ export class MmoRoom extends Room<MmoState> {
 
     // 霊宝ドロップ（種別のドロップ率・レア寄せで在庫から払い出し）
     this.tryRelicDrop(attacker, def);
+    this.tryEquipDrop(attacker);     // 装備の低確率ドロップ（無限供給）
     this.evalAchievements(attacker); // 討伐数・レベル系の達成判定
   }
 
@@ -778,16 +832,37 @@ export class MmoRoom extends Room<MmoState> {
     this.grantRelic(attacker, Math.min(1, def.rareBias + this.floorRareBias)); // 深い階ほどレア寄り
   }
 
+  // mob討伐：低確率で装備をドロップ（gear へ。無限供給・保存則とは無関係）。
+  private tryEquipDrop(attacker: MmoPlayer) {
+    if (EQUIP_DROP_ITEMS.length === 0) return;
+    if (Math.random() >= EQUIP_DROP_CHANCE) return;
+    const id = pickDropEquip();
+    this.addGear(attacker, id);
+    const client = this.clients.find((c) => c.sessionId === attacker.id);
+    client?.send("equipFound", { id, name: EQUIP[id]?.name ?? id });
+    this.persistStats(attacker);
+  }
+
   private addItem(p: MmoPlayer, id: string, n = 1) {
     p.items.set(id, (p.items.get(id) ?? 0) + n);
+  }
+
+  private addGear(p: MmoPlayer, id: string, n = 1) {
+    p.gear.set(id, (p.gear.get(id) ?? 0) + n);
   }
 
   // レベル由来 + 巻物ボーナスから atk/maxHp/def を再計算。
   // healFull=true で全回復、それ以外は現HPを上限内に収める。
   private recalcStats(p: MmoPlayer, healFull = false) {
-    p.maxHp = maxHpFor(p.level) + p.bonusMaxHp;
-    p.atk = atkFor(p.level) + p.bonusAtk;
-    p.def = 1 + p.bonusDef;
+    // 装備中ギアの補正を合算（無限供給。霊宝の保存則とは無関係）
+    let eqAtk = 0, eqDef = 0, eqHp = 0;
+    p.equip.forEach((id) => {
+      const d = EQUIP[id];
+      if (d) { eqAtk += d.atk ?? 0; eqDef += d.def ?? 0; eqHp += d.maxHp ?? 0; }
+    });
+    p.maxHp = maxHpFor(p.level) + p.bonusMaxHp + eqHp;
+    p.atk = atkFor(p.level) + p.bonusAtk + eqAtk;
+    p.def = 1 + p.bonusDef + eqDef;
     p.hp = healFull ? p.maxHp : Math.min(p.hp, p.maxHp);
   }
 
@@ -818,11 +893,21 @@ export class MmoRoom extends Room<MmoState> {
     this.persistStats(p);
   }
 
-  // アイテム売却（所持を1つ減らし sell 分のゴールドを得る）。
+  // アイテム/装備の売却（所持を1つ減らし sell 分のゴールドを得る）。装備は未装備分(gear)から。
   private sellItem(sid: string, id: string) {
     const p = this.state.players.get(sid);
+    if (!p) return;
+    const eq = EQUIP[id];
+    if (eq) {
+      if (!eq.sell || (p.gear.get(id) ?? 0) <= 0) return;
+      const left = (p.gear.get(id) ?? 0) - 1;
+      if (left <= 0) p.gear.delete(id); else p.gear.set(id, left);
+      p.gold += eq.sell;
+      this.persistStats(p);
+      return;
+    }
     const def = ITEMS[id];
-    if (!p || !def || !def.sell) return;
+    if (!def || !def.sell) return;
     if ((p.items.get(id) ?? 0) <= 0) return;
     const left = (p.items.get(id) ?? 0) - 1;
     if (left <= 0) p.items.delete(id); else p.items.set(id, left);
@@ -830,14 +915,52 @@ export class MmoRoom extends Room<MmoState> {
     this.persistStats(p);
   }
 
-  // アイテム購入（price のある回復系のみ）。ゴールド消費。
+  // アイテム/装備の購入。ゴールド消費。装備は gear へ加算。
   private buyItem(sid: string, id: string) {
     const p = this.state.players.get(sid);
+    if (!p) return;
+    const eq = EQUIP[id];
+    if (eq) {
+      if (!eq.price || p.gold < eq.price) return;
+      p.gold -= eq.price;
+      this.addGear(p, id);
+      this.persistStats(p);
+      return;
+    }
     const def = ITEMS[id];
-    if (!p || !def || !def.price) return;
+    if (!def || !def.price) return;
     if (p.gold < def.price) return;
     p.gold -= def.price;
     this.addItem(p, id);
+    this.persistStats(p);
+  }
+
+  // 装備を装着（所持ギアをスロットへ。同スロットに既装備があれば gear へ戻す）。
+  private equipItem(sid: string, id: string) {
+    const p = this.state.players.get(sid);
+    const def = EQUIP[id];
+    if (!p || !def) return;
+    if ((p.gear.get(id) ?? 0) <= 0) return;
+    const prev = p.equip.get(def.slot);
+    if (prev) this.addGear(p, prev);            // 既装備を所持へ戻す
+    const left = (p.gear.get(id) ?? 0) - 1;
+    if (left <= 0) p.gear.delete(id); else p.gear.set(id, left);
+    p.equip.set(def.slot, id);
+    const wasFull = p.hp >= p.maxHp;
+    this.recalcStats(p, false);
+    if (wasFull) p.hp = p.maxHp;                // maxHp上昇分を埋める
+    this.persistStats(p);
+  }
+
+  // 装備を外す（スロットの装備を所持ギアへ戻す）。
+  private unequipItem(sid: string, slot: string) {
+    const p = this.state.players.get(sid);
+    if (!p) return;
+    const cur = p.equip.get(slot);
+    if (!cur) return;
+    this.addGear(p, cur);
+    p.equip.delete(slot);
+    this.recalcStats(p, false);                 // maxHp低下時は現HPを上限内に丸める
     this.persistStats(p);
   }
 
