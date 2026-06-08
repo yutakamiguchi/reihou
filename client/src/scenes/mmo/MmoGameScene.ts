@@ -7,7 +7,10 @@ import {
 import { sfxHitPlayer, sfxHitNpc, sfxScore, sfxFootstep, sfxRoundStart } from "../../sfx";
 import { addMoveKeys } from "../../ui/inputKeys";
 import { makeInput } from "../../ui/nameInput";
-import { fetchCards, fetchMyCards, type Card } from "../../spirit";
+import {
+  fetchCards, fetchMyCards, fetchOpenTrades, proposeTrade, acceptTrade, cancelTrade,
+  type Card, type UserCard,
+} from "../../spirit";
 import { CARD_ICON, CARD_DESC, RARITY_META, RELIC_IMAGE_NAMES, relicTexKey } from "../spirit/cards-meta";
 import { ITEM_META, ITEM_ORDER, SPEED_BUFF_MUL, SHOP_ITEMS, SELL_PRICES } from "../spirit/items-meta";
 import { EQUIP_META, SLOTS, EQUIP_SHOP, EQUIP_SELL } from "../spirit/equip-meta";
@@ -120,6 +123,18 @@ export class MmoGameScene extends Phaser.Scene {
   private binderSel = 0; // 台帳の選択カーソル（現在タブのリスト内index）
   private binderDetail = false; // 詳細表示中か
   private binderCache?: { cards: Card[]; owned: Map<number, number> };
+  // 取引所（町・近接でE）。掲示板方式（オープン提案）
+  private tradePos?: { x: number; y: number };
+  private nearTrade = false;
+  private tradeLayer?: Phaser.GameObjects.Container;
+  private tradeTab: "browse" | "mine" | "create" = "browse";
+  private myProfileId?: string;
+  private tradeOpen: any[] = [];        // fetchOpenTrades() の結果
+  private tradeMyCards: UserCard[] = []; // 自分の所持（count/locked）
+  private tradeErr?: string;
+  private tradeLoading = false;
+  private createOffer?: number;          // 出品で「出す」card_id
+  private createRequest?: number;        // 出品で「欲しい」card_id
 
   // HUD
   private hpBarBg!: Phaser.GameObjects.Rectangle;
@@ -156,6 +171,9 @@ export class MmoGameScene extends Phaser.Scene {
     this.shopPos = undefined;
     this.nearShop = false;
     this.shopLayer = undefined;
+    this.tradePos = undefined;
+    this.nearTrade = false;
+    this.tradeLayer = undefined;
     this.traveling = false;
     this.predictReady = false;
     this.lastInputSent = { up: false, down: false, left: false, right: false };
@@ -257,6 +275,16 @@ export class MmoGameScene extends Phaser.Scene {
     const slabel = this.add.text(sx, sy - 40, "ショップ", { fontSize: "15px", color: "#ffe08a", fontStyle: "bold", stroke: "#000", strokeThickness: 3 }).setOrigin(0.5).setDepth(sy);
     this.worldLayer.add([awning, stall, sicon, slabel]);
     box(sx - 48, sy - 14, 96, 40); // ショップの当たり判定
+
+    // 取引所（掲示板＋台）。近づくと [E] でトレード画面（プレイヤー間カード交換）
+    const tx = 400, ty = 250;
+    this.tradePos = { x: tx, y: ty + 30 };
+    const tboard = this.add.rectangle(tx, ty - 16, 92, 30, 0x2f6b53).setStrokeStyle(2, 0x1c4636).setDepth(ty);
+    const tstall = this.add.rectangle(tx, ty + 8, 92, 38, 0x4a6b6b).setStrokeStyle(2, 0x29403f).setDepth(ty);
+    const ticon = this.add.text(tx, ty + 8, "🔄", { fontSize: "24px" }).setOrigin(0.5).setDepth(ty);
+    const tlabel = this.add.text(tx, ty - 40, "取引所", { fontSize: "15px", color: "#9fe0c0", fontStyle: "bold", stroke: "#000", strokeThickness: 3 }).setOrigin(0.5).setDepth(ty);
+    this.worldLayer.add([tboard, tstall, ticon, tlabel]);
+    box(tx - 46, ty - 12, 92, 38); // 取引所の当たり判定
   }
 
   // 狩場の装飾を散布（テーマで内容が変わる）。非衝突＝見た目のみ
@@ -380,7 +408,8 @@ export class MmoGameScene extends Phaser.Scene {
     this.input.keyboard!.on("keydown-W", () => selKey(0, -1));
     this.input.keyboard!.on("keydown-S", () => selKey(0, 1));
     this.input.keyboard!.on("keydown-ESC", () => {
-      if (this.shopLayer) this.closeShop();
+      if (this.tradeLayer) this.closeTrade();
+      else if (this.shopLayer) this.closeShop();
       else if (this.worldmapLayer) this.closeWorldMap();
       else if (this.statusLayer) this.closeStatus();
       else if (this.binderLayer && this.binderDetail) { this.binderDetail = false; this.drawBinder(); } // 詳細→一覧
@@ -411,6 +440,7 @@ export class MmoGameScene extends Phaser.Scene {
     this.input.keyboard!.on("keydown-E", () => { // ショップ / ゲート / 宝箱
       if (this.overlayOpen()) return;
       if (this.nearShop) this.openShop();
+      else if (this.nearTrade) void this.openTrade();
       else if (this.nearGate) void this.tryTravel();
       else if (this.nearTreasure) this.room.send("openTreasure", { id: this.nearTreasure });
     });
@@ -928,6 +958,274 @@ export class MmoGameScene extends Phaser.Scene {
     this.time.delayedCall(160, () => { if (this.shopLayer) this.drawShop(); });
   }
 
+  // --- 取引所（町でEキー。プレイヤー間カード交換・掲示板方式）---
+
+  private closeTrade() {
+    this.tradeLayer?.destroy();
+    this.tradeLayer = undefined;
+  }
+
+  private async openTrade() {
+    if (this.overlayOpen()) return;
+    this.tradeTab = "browse";
+    this.createOffer = undefined;
+    this.createRequest = undefined;
+    this.tradeErr = undefined;
+    this.tradeLoading = true;
+    const layer = this.add.container(0, 0).setScrollFactor(0).setDepth(7000);
+    this.uiLayer.add(layer);
+    this.tradeLayer = layer;
+    this.drawTrade();
+    try {
+      const [user, open, mine, cards] = await Promise.all([
+        getUser(), fetchOpenTrades(), fetchMyCards(), fetchCards(),
+      ]);
+      this.myProfileId = user?.id;
+      this.tradeOpen = open as any[];
+      this.tradeMyCards = mine;
+      this.cardById = new Map(cards.map((c) => [c.id, c]));
+    } catch (e: any) {
+      this.tradeErr = e?.message ?? String(e);
+    }
+    this.tradeLoading = false;
+    if (this.tradeLayer) this.drawTrade();
+  }
+
+  // 取引データを再取得して再描画（操作後に呼ぶ）
+  private async reloadTrade() {
+    try {
+      const [open, mine] = await Promise.all([fetchOpenTrades(), fetchMyCards()]);
+      this.tradeOpen = open as any[];
+      this.tradeMyCards = mine;
+    } catch (e: any) { this.tradeErr = e?.message ?? String(e); }
+    if (this.tradeLayer) this.drawTrade();
+  }
+
+  // カードのメタ（名前・レアリティ）。cardById から引く。
+  private tCard(id: number): { name: string; rarity: "common" | "rare" | "legend" } {
+    const c = this.cardById.get(id);
+    return { name: c?.name ?? `#${id}`, rarity: (c?.rarity ?? "common") as any };
+  }
+
+  // 自由に使える枚数（count - locked）。
+  private freeOf(cardId: number): number {
+    const c = this.tradeMyCards.find((u) => u.card_id === cardId);
+    return c ? c.count - c.locked : 0;
+  }
+
+  // 1枚ぶんのカード表示（アイコン＋名前）。layerに追加。
+  private tradeChip(layer: Phaser.GameObjects.Container, x: number, y: number, cardId: number, box = 30) {
+    const info = this.tCard(cardId);
+    layer.add(this.makeRelicIcon(x + box / 2, y, info.name, cardId, box, false));
+    const rm = RARITY_META[info.rarity] ?? RARITY_META.common;
+    layer.add(this.add.text(x + box + 8, y, info.name, { fontSize: "13px", color: rm.colorStr, fontStyle: "bold" }).setOrigin(0, 0.5));
+  }
+
+  // 取引のトースト通知（成立/失敗）。showRelicFound と同パターン。
+  private showTradeToast(text: string, ok = true) {
+    const cx = this.scale.width / 2;
+    const cont = this.add.container(cx, 150).setScrollFactor(0).setDepth(5300);
+    this.uiLayer.add(cont);
+    const bg = this.add.rectangle(0, 0, 360, 56, 0x15101f, 0.97).setStrokeStyle(3, ok ? 0x7ee787 : 0xe08a8a);
+    const t = this.add.text(0, 0, text, { fontSize: "16px", color: ok ? "#7ee787" : "#e08a8a", fontStyle: "bold" }).setOrigin(0.5);
+    cont.add([bg, t]);
+    cont.setAlpha(0).setScale(0.9);
+    this.tweens.add({ targets: cont, alpha: 1, scale: 1, duration: 220, ease: "Back.easeOut" });
+    this.time.delayedCall(2200, () => {
+      if (!cont.active) return;
+      this.tweens.add({ targets: cont, alpha: 0, y: 130, duration: 300, onComplete: () => cont.destroy() });
+    });
+  }
+
+  // 取引のエラー理由を日本語に。
+  private tradeReason(code: string): string {
+    if (code.startsWith("responder_short")) return "あなたの在庫が不足しています";
+    if (code === "unavailable") return "この取引はすでに成立/取消済みです";
+    if (code === "not_for_you") return "この取引はあなた宛てではありません";
+    if (code === "not_found") return "取引が見つかりません";
+    if (code.startsWith("insufficient_free")) return "出すカードの在庫が不足しています";
+    if (code === "cannot_trade_self") return "自分とは取引できません";
+    if (code === "cannot_accept_own") return "自分の出品は承認できません";
+    return code;
+  }
+
+  private drawTrade() {
+    const layer = this.tradeLayer; if (!layer) return;
+    layer.removeAll(true);
+    const { width, height } = this.scale;
+    const cx = width / 2;
+    const pw = Math.min(760, width - 60), ph = Math.min(560, height - 60);
+    const px = cx - pw / 2, py = (height - ph) / 2;
+    const T = (x: number, y: number, t: string, size: number, color: string, bold = false) => {
+      const o = this.add.text(x, y, t, { fontSize: `${size}px`, color, fontStyle: bold ? "bold" : "normal" });
+      layer.add(o); return o;
+    };
+    layer.add(this.add.rectangle(cx, height / 2, width, height, 0x000000, 0.85).setInteractive());
+    layer.add(this.add.rectangle(cx, py + ph / 2, pw, ph, 0x141a16, 0.98).setStrokeStyle(2, 0x4a7a64));
+    T(px + 28, py + 22, "🔄 取引所", 24, "#9fe0c0", true);
+    T(px + pw - 28, py + 26, "カード ↔ カードの交換", 13, "#7fae98", false).setOrigin(1, 0);
+    const close = T(px + pw - 28, py + ph - 28, "✕ 閉じる (Esc / E)", 14, "#cccccc").setOrigin(1, 0).setInteractive({ useHandCursor: true });
+    close.on("pointerdown", () => this.closeTrade());
+
+    // タブ
+    const tabs: Array<["browse" | "mine" | "create", string]> = [["browse", "取引所"], ["mine", "自分の出品"], ["create", "新規出品"]];
+    tabs.forEach(([key, label], i) => {
+      const tw = 120, tx = px + 28 + i * (tw + 8), ty = py + 58;
+      const on = this.tradeTab === key;
+      const tab = this.add.rectangle(tx, ty, tw, 32, on ? 0x2f5a47 : 0x1c2a24, 0.95).setOrigin(0, 0)
+        .setStrokeStyle(1, on ? 0x7ab59a : 0x35443d).setInteractive({ useHandCursor: true });
+      tab.on("pointerdown", () => { this.tradeTab = key; this.drawTrade(); });
+      layer.add(tab);
+      T(tx + tw / 2, ty + 16, label, 15, on ? "#ece7f5" : "#8fae9f", on).setOrigin(0.5);
+    });
+
+    const top = py + 104, listX = px + 28, listW = pw - 56;
+    if (this.tradeLoading) { T(cx, top + 60, "読み込み中…", 16, "#ece7f5").setOrigin(0.5); return; }
+    if (this.tradeErr) { T(cx, top + 60, `エラー: ${this.tradeErr}`, 14, "#e08a8a").setOrigin(0.5); return; }
+    if (!this.myProfileId) { T(cx, top + 60, "取引にはアカウントが必要です（ログインしてください）", 14, "#e08a8a").setOrigin(0.5); return; }
+
+    if (this.tradeTab === "browse") this.drawTradeBrowse(layer, T, listX, top, listW, py + ph);
+    else if (this.tradeTab === "mine") this.drawTradeMine(layer, T, listX, top, listW, py + ph);
+    else this.drawTradeCreate(layer, T, listX, top, listW, py + ph);
+  }
+
+  // offer/request の最初のアイテムを取り出す（1↔1前提）。
+  private tradePair(t: any): { offer?: { card_id: number; qty: number }; request?: { card_id: number; qty: number } } {
+    const items: any[] = t.trade_items ?? [];
+    return {
+      offer: items.find((x) => x.side === "offer"),
+      request: items.find((x) => x.side === "request"),
+    };
+  }
+
+  private drawTradeRow(layer: Phaser.GameObjects.Container, listX: number, ry: number, listW: number, t: any,
+    btnLabel: string, btnColor: number, btnStroke: number, enabled: boolean, onClick: () => void) {
+    const rowH = 56;
+    layer.add(this.add.rectangle(listX, ry, listW, rowH, 0x1c2a24, 0.85).setOrigin(0, 0).setStrokeStyle(1, 0x35443d));
+    const { offer, request } = this.tradePair(t);
+    const my = ry + rowH / 2;
+    if (offer) this.tradeChip(layer, listX + 14, my, offer.card_id, 30);
+    layer.add(this.add.text(listX + listW * 0.40, my, "⇄", { fontSize: "20px", color: "#9fe0c0" }).setOrigin(0.5));
+    if (request) this.tradeChip(layer, listX + listW * 0.46, my, request.card_id, 30);
+    const btnW = 120, btnX = listX + listW - btnW - 12, btnY = my;
+    const btn = this.add.rectangle(btnX, btnY, btnW, 38, enabled ? btnColor : 0x35443d).setOrigin(0, 0.5)
+      .setStrokeStyle(1, enabled ? btnStroke : 0x4a4360);
+    if (enabled) btn.setInteractive({ useHandCursor: true }).on("pointerdown", onClick);
+    layer.add(btn);
+    layer.add(this.add.text(btnX + btnW / 2, btnY, btnLabel, { fontSize: "15px", color: enabled ? "#ffffff" : "#7a8a82", fontStyle: "bold" }).setOrigin(0.5));
+  }
+
+  private drawTradeBrowse(layer: Phaser.GameObjects.Container, T: any, listX: number, top: number, listW: number, bottom: number) {
+    T(listX, top, "▸ 公開中の取引（承認すると即交換）", 15, "#9fe0c0", true);
+    const list = this.tradeOpen.filter((t) => t.proposer_id !== this.myProfileId);
+    if (list.length === 0) { T(listX + listW / 2, top + 70, "公開中の取引はありません", 14, "#6a8278").setOrigin(0.5); return; }
+    const rowH = 56, gap = 10; let ry = top + 30;
+    for (const t of list) {
+      if (ry + rowH > bottom - 44) break; // パネル下端まで（MVP：スクロール無し）
+      const { request } = this.tradePair(t);
+      const can = !!request && this.freeOf(request.card_id) >= (request.qty ?? 1);
+      this.drawTradeRow(layer, listX, ry, listW, t, can ? "承認" : "所持不足", 0x2f7d4f, 0x57c084, can, async () => {
+        const r = await acceptTrade(t.id);
+        if (r === "ok") { this.showTradeToast("交換が成立しました", true); sfxScore(); }
+        else this.showTradeToast(this.tradeReason(r), false);
+        void this.reloadTrade();
+      });
+      ry += rowH + gap;
+    }
+    T(listX, bottom - 34, "「欲しいカード」を所持していれば承認できます", 12, "#6a8278");
+  }
+
+  private drawTradeMine(layer: Phaser.GameObjects.Container, T: any, listX: number, top: number, listW: number, bottom: number) {
+    T(listX, top, "▸ 自分の出品（取消でロック解除）", 15, "#9fe0c0", true);
+    const list = this.tradeOpen.filter((t) => t.proposer_id === this.myProfileId);
+    if (list.length === 0) { T(listX + listW / 2, top + 70, "出品中の取引はありません", 14, "#6a8278").setOrigin(0.5); return; }
+    const rowH = 56, gap = 10; let ry = top + 30;
+    for (const t of list) {
+      if (ry + rowH > bottom - 44) break;
+      this.drawTradeRow(layer, listX, ry, listW, t, "取消", 0x7d5a2f, 0xc0894f, true, async () => {
+        const r = await cancelTrade(t.id);
+        if (r === "ok") this.showTradeToast("出品を取り消しました", true);
+        else this.showTradeToast(this.tradeReason(r), false);
+        void this.reloadTrade();
+      });
+      ry += rowH + gap;
+    }
+    T(listX, bottom - 34, "出したカードは成立まで「ロック」され他で使えません", 12, "#6a8278");
+  }
+
+  private drawTradeCreate(layer: Phaser.GameObjects.Container, T: any, listX: number, top: number, listW: number, bottom: number) {
+    // 選択中の表示＋出品ボタン
+    T(listX, top, "▸ 新規出品（出す1枚 ⇄ 欲しい1枚）", 15, "#9fe0c0", true);
+    const selY = top + 36;
+    layer.add(this.add.rectangle(listX, selY, listW, 44, 0x10160f, 0.9).setOrigin(0, 0).setStrokeStyle(1, 0x35443d));
+    T(listX + 12, selY + 22, "出す:", 13, "#8fae9f").setOrigin(0, 0.5);
+    if (this.createOffer != null) this.tradeChip(layer, listX + 56, selY + 22, this.createOffer, 26);
+    else T(listX + 56, selY + 22, "未選択", 13, "#6a8278").setOrigin(0, 0.5);
+    layer.add(this.add.text(listX + listW * 0.46, selY + 22, "⇄", { fontSize: "18px", color: "#9fe0c0" }).setOrigin(0.5));
+    T(listX + listW * 0.50, selY + 22, "欲しい:", 13, "#8fae9f").setOrigin(0, 0.5);
+    if (this.createRequest != null) this.tradeChip(layer, listX + listW * 0.50 + 50, selY + 22, this.createRequest, 26);
+    else T(listX + listW * 0.50 + 50, selY + 22, "未選択", 13, "#6a8278").setOrigin(0, 0.5);
+    const canPost = this.createOffer != null && this.createRequest != null;
+    const pbW = 130, pbX = listX + listW - pbW, pbY = selY + 22;
+    const pbtn = this.add.rectangle(pbX, pbY, pbW, 36, canPost ? 0x2f7d4f : 0x35443d).setOrigin(0, 0.5)
+      .setStrokeStyle(1, canPost ? 0x57c084 : 0x4a4360);
+    if (canPost) pbtn.setInteractive({ useHandCursor: true }).on("pointerdown", async () => {
+      const offer = this.createOffer!, request = this.createRequest!;
+      try {
+        await proposeTrade([{ card_id: offer, qty: 1 }], [{ card_id: request, qty: 1 }]);
+        this.showTradeToast("出品しました", true); sfxScore();
+        this.createOffer = undefined; this.createRequest = undefined; this.tradeTab = "mine";
+        void this.reloadTrade();
+      } catch (e: any) {
+        this.showTradeToast(this.tradeReason(e?.message ?? String(e)), false);
+      }
+    });
+    layer.add(pbtn);
+    layer.add(this.add.text(pbX + pbW / 2, pbY, "出品する", { fontSize: "14px", color: canPost ? "#ffffff" : "#7a8a82", fontStyle: "bold" }).setOrigin(0.5));
+
+    // 出すカード候補（重複所持＝count-locked>0）
+    const offY = selY + 60;
+    T(listX, offY, "出すカード（重複して持っているカード）", 13, "#bdb6d0");
+    const dups = this.tradeMyCards.filter((u) => u.count - u.locked > 0).sort((a, b) => a.card_id - b.card_id);
+    if (dups.length === 0) {
+      T(listX + 8, offY + 26, "出せるカードがありません（同じカードを2枚以上持つと出品できます）", 12, "#6a8278");
+    } else {
+      this.cardGrid(layer, listX, offY + 22, listW, dups.map((u) => u.card_id), this.createOffer, (id) => { this.createOffer = id; this.drawTrade(); }, dups);
+    }
+
+    // 欲しいカード候補（全種）
+    const reqY = offY + 22 + 2 * 46 + 16;
+    T(listX, reqY, "欲しいカード（全種から選択）", 13, "#bdb6d0");
+    const all = [...this.cardById.values()].sort((a, b) => a.id - b.id).map((c) => c.id);
+    this.cardGrid(layer, listX, reqY + 22, listW, all, this.createRequest, (id) => { this.createRequest = id; this.drawTrade(); });
+  }
+
+  // カードを小アイコンのグリッドで並べ、クリックで選択。selected はハイライト。
+  // counts を渡すと所持枚数バッジを表示。
+  private cardGrid(layer: Phaser.GameObjects.Container, x: number, y: number, w: number,
+    ids: number[], selected: number | undefined, onPick: (id: number) => void, counts?: UserCard[]) {
+    const cell = 42, gap = 8, cols = Math.max(1, Math.floor((w + gap) / (cell + gap)));
+    ids.forEach((id, i) => {
+      const col = i % cols, row = Math.floor(i / cols);
+      if (row > 1) return; // MVP：2行まで（はみ出し防止）
+      const cxp = x + col * (cell + gap) + cell / 2, cyp = y + row * (cell + gap) + cell / 2;
+      const sel = selected === id;
+      const box = this.add.rectangle(cxp, cyp, cell, cell, sel ? 0x2f5a47 : 0x1c2a24)
+        .setStrokeStyle(2, sel ? 0x9fe0c0 : 0x35443d).setInteractive({ useHandCursor: true });
+      box.on("pointerdown", () => onPick(id));
+      layer.add(box);
+      layer.add(this.makeRelicIcon(cxp, cyp, this.tCard(id).name, id, cell - 12, false));
+      if (counts) {
+        const c = counts.find((u) => u.card_id === id);
+        const free = c ? c.count - c.locked : 0;
+        layer.add(this.add.text(cxp + cell / 2 - 4, cyp + cell / 2 - 4, `×${free}`, { fontSize: "11px", color: "#ffffff", fontStyle: "bold", stroke: "#000", strokeThickness: 2 }).setOrigin(1, 1));
+      }
+    });
+    if (Math.ceil(ids.length / cols) > 2) {
+      layer.add(this.add.text(x + w, y - 18, `先頭 ${Math.min(ids.length, cols * 2)}/${ids.length} 種を表示`, { fontSize: "11px", color: "#6a8278" }).setOrigin(1, 0));
+    }
+  }
+
   // --- ステータスパネル（Cキー。蒐集進捗＋RPG＋アカウント情報）---
 
   private toggleStatus() {
@@ -1284,7 +1582,7 @@ export class MmoGameScene extends Phaser.Scene {
     this.binderLayer = undefined;
   }
 
-  private overlayOpen(): boolean { return !!(this.binderLayer || this.statusLayer || this.worldmapLayer || this.shopLayer); }
+  private overlayOpen(): boolean { return !!(this.binderLayer || this.statusLayer || this.worldmapLayer || this.shopLayer || this.tradeLayer); }
 
   // --- チャット（/ で開く）---
 
@@ -1563,8 +1861,9 @@ export class MmoGameScene extends Phaser.Scene {
       }
       this.nearGate = near;
       this.nearShop = !near && !!this.shopPos && Math.hypot(me.x - this.shopPos.x, me.y - this.shopPos.y) <= 90;
+      this.nearTrade = !near && !this.nearShop && !!this.tradePos && Math.hypot(me.x - this.tradePos.x, me.y - this.tradePos.y) <= 90;
       this.nearTreasure = null;
-      if (!near && !this.nearShop) {
+      if (!near && !this.nearShop && !this.nearTrade) {
         let bestD = 44;
         this.treasureViews.forEach((c, id) => {
           const d = Math.hypot(me.x - c.x, me.y - c.y);
@@ -1573,11 +1872,13 @@ export class MmoGameScene extends Phaser.Scene {
       }
       if (near) this.gatePrompt?.setText(`[E] ${near.label}`).setVisible(true);
       else if (this.nearShop) this.gatePrompt?.setText("[E] ショップ").setVisible(true);
+      else if (this.nearTrade) this.gatePrompt?.setText("[E] 取引所").setVisible(true);
       else if (this.nearTreasure) this.gatePrompt?.setText("[E] 宝箱を開ける").setVisible(true);
       else this.gatePrompt?.setVisible(false);
     } else {
       this.nearGate = null;
       this.nearShop = false;
+      this.nearTrade = false;
       this.nearTreasure = null;
       this.gatePrompt?.setVisible(false);
     }
