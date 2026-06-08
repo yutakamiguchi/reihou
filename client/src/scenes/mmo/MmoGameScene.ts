@@ -312,6 +312,54 @@ export class MmoGameScene extends Phaser.Scene {
     return t;
   }
 
+  // 「全面イラスト＋下部の名前帯」の霊宝カード。中心(0,0)・サイズ w×h のコンテナを返す。
+  // 台帳グリッド・詳細表示・ドロップ演出で共通利用（イラスト主役レイアウト）。
+  private makeRelicCard(opts: {
+    cardId: number; name: string; rarity: "common" | "rare" | "legend";
+    w: number; h: number; owned: boolean; count?: number; selected?: boolean;
+  }): Phaser.GameObjects.Container {
+    const { cardId, name, rarity, w, h, owned } = opts;
+    const sel = !!opts.selected;
+    const meta = RARITY_META[rarity];
+    const cont = this.add.container(0, 0);
+    cont.setSize(w, h);
+
+    // 背景：レアリティ色を深く沈めた地色（未所持はほぼ黒）
+    const baseCol = owned
+      ? Phaser.Display.Color.IntegerToColor(meta.colorNum).darken(72).color
+      : 0x131019;
+    const bg = this.add.rectangle(0, 0, w, h, baseCol, owned || sel ? 1 : 0.6)
+      .setStrokeStyle(sel ? 3 : 2, sel ? 0xffe066 : (owned ? meta.colorNum : 0x39354a));
+    cont.add(bg);
+    // 上端のレアリティ・アクセント
+    cont.add(this.add.rectangle(0, -h / 2 + 3, w, 4, meta.colorNum, owned ? 0.9 : 0.4));
+
+    // イラスト（主役）：カード上〜中央に大きく
+    const artBox = Math.min(w * 0.92, h * 0.64);
+    cont.add(this.makeRelicIcon(0, -h * 0.10, name, cardId, artBox, !owned));
+
+    // 下部の名前帯
+    const bandH = Math.max(24, Math.round(h * 0.22));
+    const bandY = h / 2 - bandH / 2;
+    cont.add(this.add.rectangle(0, bandY, w, bandH, 0x0b0810, 0.85));
+    cont.add(this.add.rectangle(0, bandY - bandH / 2, w, 1, meta.colorNum, owned ? 0.7 : 0.3));
+    const nameSize = Math.max(11, Math.min(Math.round(w * 0.12), 18));
+    cont.add(this.add.text(0, bandY, owned ? name : "？？？", {
+      fontSize: `${nameSize}px`, color: owned ? "#f3eeff" : "#4a4360",
+      fontStyle: "bold", align: "center", wordWrap: { width: w - 12 },
+    }).setOrigin(0.5));
+
+    // 所持数バッジ（複数所持時）
+    const count = opts.count ?? 0;
+    if (count > 1) {
+      cont.add(this.add.text(w / 2 - 14, -h / 2 + 14, `×${count}`, {
+        fontSize: `${Math.max(10, Math.round(w * 0.1))}px`, color: "#15101f",
+        fontStyle: "bold", backgroundColor: "#e8b04b", padding: { x: 5, y: 1 } as any,
+      }).setOrigin(0.5));
+    }
+    return cont;
+  }
+
   create() {
     const { width, height } = this.scale;
     ensureCharAnims(this);
@@ -768,11 +816,12 @@ export class MmoGameScene extends Phaser.Scene {
     const cx = this.scale.width / 2;
     const cont = this.add.container(cx, 150).setScrollFactor(0).setDepth(5000);
     this.uiLayer.add(cont);
-    const bg = this.add.rectangle(0, 0, 320, 92, 0x15101f, 0.96).setStrokeStyle(3, meta?.colorNum ?? 0xe8b04b);
-    const icon = this.makeRelicIcon(-128, 0, c?.name ?? "", cardId, 64, false);
-    const title = this.add.text(-92, -18, "✦ 霊宝を発見！", { fontSize: "16px", color: "#e8c87e", fontStyle: "bold" }).setOrigin(0, 0.5);
-    const name = this.add.text(-92, 14, c?.name ?? `#${cardId}`, { fontSize: "22px", color: "#ece7f5", fontStyle: "bold" }).setOrigin(0, 0.5);
-    cont.add([bg, icon, title, name]);
+    const bg = this.add.rectangle(0, 0, 340, 116, 0x15101f, 0.96).setStrokeStyle(3, meta?.colorNum ?? 0xe8b04b);
+    const card = this.makeRelicCard({ cardId, name: c?.name ?? "", rarity: c?.rarity ?? "legend", w: 74, h: 100, owned: true });
+    card.setPosition(-122, 0);
+    const title = this.add.text(-78, -20, "✦ 霊宝を発見！", { fontSize: "16px", color: "#e8c87e", fontStyle: "bold" }).setOrigin(0, 0.5);
+    const name = this.add.text(-78, 14, c?.name ?? `#${cardId}`, { fontSize: "22px", color: "#ece7f5", fontStyle: "bold" }).setOrigin(0, 0.5);
+    cont.add([bg, card, title, name]);
     cont.setAlpha(0).setScale(0.85);
     this.tweens.add({ targets: cont, alpha: 1, scale: 1, duration: 250, ease: "Back.easeOut" });
     sfxScore();
@@ -1704,28 +1753,20 @@ export class MmoGameScene extends Phaser.Scene {
 
     const list = cards.filter((c) => c.rarity === this.binderTab);
     this.binderSel = Math.max(0, Math.min(this.binderSel, list.length - 1));
-    const cols = MmoGameScene.BINDER_COLS, cellW = 128, cellH = 116, gapX = 6, gapY = 12;
+    const cols = MmoGameScene.BINDER_COLS, cellW = 104, cellH = 138, gapX = 10, gapY = 16;
     const totalW = cols * cellW + (cols - 1) * gapX;
     const startX = (width - totalW) / 2 + cellW / 2;
-    const startY = 180;
+    const startY = 188;
     list.forEach((c, i) => {
       const col = i % cols, row = Math.floor(i / cols);
       const x = startX + col * (cellW + gapX);
       const y = startY + row * (cellH + gapY);
       const count = owned.get(c.id) ?? 0;
-      const has = count > 0;
-      const meta = RARITY_META[c.rarity];
       const isSel = i === this.binderSel;
-      const bg = this.add.rectangle(x, y, cellW, cellH, isSel ? 0x2a2150 : 0x1c1530, has || isSel ? 0.98 : 0.5)
-        .setStrokeStyle(isSel ? 3 : 2, isSel ? 0xffe066 : (has ? meta.colorNum : 0x3a3550));
-      const icon = this.makeRelicIcon(x, y - 22, c.name, c.id, isSel ? 62 : 56, !has);
-      const name = this.add.text(x, y + 30, has ? c.name : "？？？", { fontSize: "13px", color: has ? "#ece7f5" : "#4a4360", align: "center", wordWrap: { width: cellW - 12 } }).setOrigin(0.5);
-      layer.add([bg, icon, name]);
-      if (count > 1) {
-        layer.add(this.add.text(x + cellW / 2 - 16, y - cellH / 2 + 11, `×${count}`, {
-          fontSize: "11px", color: "#15101f", fontStyle: "bold", backgroundColor: "#e8b04b", padding: { x: 4, y: 1 } as any,
-        }).setOrigin(0.5));
-      }
+      const card = this.makeRelicCard({ cardId: c.id, name: c.name, rarity: c.rarity, w: cellW, h: cellH, owned: count > 0, count, selected: isSel });
+      card.setPosition(x, y);
+      if (isSel) card.setScale(1.04);
+      layer.add(card);
     });
     layer.add(this.add.text(cx, height - 30, "Enter で選択中の霊宝を詳細表示", { fontSize: "13px", color: "#7ee787" }).setOrigin(0.5));
   }
@@ -1747,16 +1788,16 @@ export class MmoGameScene extends Phaser.Scene {
     const cy = height / 2 - 10;
     const leftX = width * 0.28;
 
-    // 左：拡大した霊宝。縦軸まわりの回転を scaleX=cos で擬似（90度で縦線、反時計）
-    const icon = this.makeRelicIcon(leftX, cy, c.name, c.id, 300, !has);
-    layer.add(icon);
-    const base = (icon as any).scaleX as number;
+    // 左：大きな霊宝カード。縦軸まわりの回転を scaleX=cos で擬似（90度で縦線）
+    const card = this.makeRelicCard({ cardId: c.id, name: c.name, rarity: c.rarity, w: 300, h: 410, owned: has, count });
+    card.setPosition(leftX, cy);
+    layer.add(card);
     const spin = { t: 0 };
     this.tweens.add({
       targets: spin, t: 1, duration: 12000, repeat: -1, ease: "Linear",
-      onUpdate: () => { if ((icon as any).active) (icon as any).scaleX = base * Math.cos(spin.t * Math.PI * 2); },
+      onUpdate: () => { if (card.active) card.scaleX = Math.cos(spin.t * Math.PI * 2); },
     });
-    layer.add(this.add.text(leftX, cy + 185, meta.label, { fontSize: "20px", color: meta.colorStr, fontStyle: "bold" }).setOrigin(0.5));
+    layer.add(this.add.text(leftX, cy + 230, meta.label, { fontSize: "20px", color: meta.colorStr, fontStyle: "bold" }).setOrigin(0.5));
 
     // 右：説明
     const rx = width * 0.55;
