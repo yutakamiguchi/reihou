@@ -32,6 +32,43 @@ const ACHIEVEMENTS: Achv[] = [
   { id: "play10h",  type: "playSec",   need: 36000, desc: "10時間プレイせし者（秘宝を授かる）",      legend: true },
 ];
 
+// クエスト（受注制）。client の quests-meta.ts と id/goal/reward を一致させること。
+// goal.kind は MOB_KINDS のキー。reward.relic（在庫から霊宝）は repeatable:false 専用。
+interface QuestDef {
+  id: string; name: string; desc: string;
+  goal: { type: "killAny" | "killKind"; kind?: string; count: number };
+  reward: { gold?: number; item?: { id: string; n: number }; relic?: boolean; rareBias?: number };
+  repeatable: boolean;
+}
+const QUESTS: QuestDef[] = [
+  { id: "q_any30", name: "魔物退治の依頼", desc: "魔物を30体討伐する",
+    goal: { type: "killAny", count: 30 },
+    reward: { gold: 150, item: { id: "potion_s", n: 2 } }, repeatable: true },
+  { id: "q_grunt10", name: "迷い霊の鎮め", desc: "迷い霊を10体討伐する",
+    goal: { type: "killKind", kind: "grunt", count: 10 },
+    reward: { gold: 60 }, repeatable: true },
+  { id: "q_slime15", name: "スライム掃討", desc: "泥スライムを15体討伐する",
+    goal: { type: "killKind", kind: "slime", count: 15 },
+    reward: { gold: 120 }, repeatable: true },
+  { id: "q_spider12", name: "毒蜘蛛の駆除", desc: "毒蜘蛛を12体討伐する",
+    goal: { type: "killKind", kind: "spider", count: 12 },
+    reward: { gold: 80, item: { id: "potion_l", n: 1 } }, repeatable: true },
+  { id: "q_boss1", name: "災厄の主を討て", desc: "災厄の主（ボス）を1体討伐する",
+    goal: { type: "killKind", kind: "boss", count: 1 },
+    reward: { item: { id: "scroll_atk", n: 1 } }, repeatable: false },
+  { id: "q_tank20", name: "巨人狩りの誓い", desc: "岩石巨人を20体討伐する",
+    goal: { type: "killKind", kind: "tank", count: 20 },
+    reward: { relic: true, rareBias: 0.4 }, repeatable: false },
+];
+const QUEST_BY_ID: Record<string, QuestDef> = Object.fromEntries(QUESTS.map((q) => [q.id, q]));
+const MAX_ACTIVE_QUESTS = 3;
+// クエスト進捗のランタイム表現。active=受注中（残り討伐数）/ done=達成・報酬未受取 / claimed=受取済み
+interface QuestRt {
+  active: Array<{ id: string; remaining: number }>;
+  done: Set<string>;
+  claimed: Set<string>;
+}
+
 const TICK_RATE = 30;
 const PLAYER_SPEED = 140;
 const ENTITY_RADIUS = 14;
@@ -208,7 +245,7 @@ export class MmoRoom extends Room<MmoState> {
   // プレイ時間/達成の算出用ランタイム
   private statsRt = new Map<string, {
     basePlaySec: number; sessionStartMs: number;
-    claimed: Set<string>; collected: number;
+    claimed: Set<string>; collected: number; quests: QuestRt;
   }>();
   private lastPersistAt = 0;
 
@@ -276,6 +313,20 @@ export class MmoRoom extends Room<MmoState> {
       this.unequipItem(client.sessionId, message?.slot ?? "");
     });
 
+    // クエスト：受注
+    this.onMessage("acceptQuest", (client, message: { id?: string }) => {
+      this.acceptQuest(client.sessionId, message?.id ?? "");
+    });
+    // クエスト：報告（達成済みクエストの報酬受取）
+    this.onMessage("claimQuest", (client, message: { id?: string }) => {
+      this.claimQuest(client.sessionId, message?.id ?? "");
+    });
+    // クエスト：現在の受注状態を要求（受注所パネルを開いたとき）
+    this.onMessage("questState", (client) => {
+      const rt = this.statsRt.get(client.sessionId);
+      if (rt) client.send("questState", this.questStatePayload(rt.quests));
+    });
+
     this.setSimulationInterval((dt) => this.update(dt), 1000 / TICK_RATE);
     this.lastTick = Date.now();
   }
@@ -311,6 +362,7 @@ export class MmoRoom extends Room<MmoState> {
     // 保存済みの進行を復元（ログイン者のみ）
     let basePlaySec = 0;
     let claimed: string[] = [];
+    const questRt: QuestRt = { active: [], done: new Set(), claimed: new Set() };
     if (profileId && isSupabaseConfigured) {
       const s = await loadGameStats(profileId, SPIRIT_GAME_KEY);
       if (s) {
@@ -337,6 +389,20 @@ export class MmoRoom extends Room<MmoState> {
         p.kills = typeof s.kills === "number" ? s.kills : 0;
         basePlaySec = typeof s.playSec === "number" ? s.playSec : 0;
         claimed = Array.isArray(s.claimed) ? s.claimed : [];
+        // クエスト進捗の復元（不正なidは無視）
+        if (s.quests && typeof s.quests === "object") {
+          const q = s.quests as any;
+          if (Array.isArray(q.active)) {
+            for (const a of q.active) {
+              if (a && QUEST_BY_ID[a.id] && typeof a.remaining === "number"
+                && questRt.active.length < MAX_ACTIVE_QUESTS) {
+                questRt.active.push({ id: a.id, remaining: Math.max(0, Math.floor(a.remaining)) });
+              }
+            }
+          }
+          if (Array.isArray(q.done)) for (const id of q.done) if (QUEST_BY_ID[id]) questRt.done.add(id);
+          if (Array.isArray(q.claimed)) for (const id of q.claimed) if (QUEST_BY_ID[id]) questRt.claimed.add(id);
+        }
         p.gold = typeof s.gold === "number" ? s.gold : 0;
         if (s.items && typeof s.items === "object") {
           for (const [k, v] of Object.entries(s.items)) {
@@ -348,6 +414,7 @@ export class MmoRoom extends Room<MmoState> {
     p.playSec = Math.floor(basePlaySec);
     this.statsRt.set(client.sessionId, {
       basePlaySec, sessionStartMs: Date.now(), claimed: new Set(claimed), collected: 0,
+      quests: questRt,
     });
 
     this.placeRandomly(p);
@@ -377,6 +444,10 @@ export class MmoRoom extends Room<MmoState> {
     void saveGameStats(pid, SPIRIT_GAME_KEY, {
       level: p.level, exp: p.exp, kills: p.kills, playSec: p.playSec,
       claimed: rt ? [...rt.claimed] : [],
+      quests: rt ? {
+        active: rt.quests.active.map((a) => ({ id: a.id, remaining: a.remaining })),
+        done: [...rt.quests.done], claimed: [...rt.quests.claimed],
+      } : { active: [], done: [], claimed: [] },
       gold: p.gold, items: Object.fromEntries(p.items.entries()),
       gear: Object.fromEntries(p.gear.entries()), equip: Object.fromEntries(p.equip.entries()),
       bonusAtk: p.bonusAtk, bonusDef: p.bonusDef, bonusMaxHp: p.bonusMaxHp,
@@ -823,7 +894,90 @@ export class MmoRoom extends Room<MmoState> {
     // 霊宝ドロップ（種別のドロップ率・レア寄せで在庫から払い出し）
     this.tryRelicDrop(attacker, def);
     this.tryEquipDrop(attacker);     // 装備の低確率ドロップ（無限供給）
+    this.progressQuests(attacker, mob.kind); // 受注中クエストの進捗（討伐系）
     this.evalAchievements(attacker); // 討伐数・レベル系の達成判定
+  }
+
+  // 受注中クエストの進捗を進める。対象種別の討伐で remaining を1減らし、0で達成(done)へ。
+  private progressQuests(p: MmoPlayer, mobKind: string) {
+    const rt = this.statsRt.get(p.id);
+    if (!rt) return;
+    const client = this.clients.find((c) => c.sessionId === p.id);
+    let changed = false;
+    let completed = false;
+    for (const a of rt.quests.active) {
+      const def = QUEST_BY_ID[a.id];
+      if (!def || a.remaining <= 0) continue;
+      const match = def.goal.type === "killAny"
+        || (def.goal.type === "killKind" && def.goal.kind === mobKind);
+      if (!match) continue;
+      a.remaining -= 1;
+      changed = true;
+      if (a.remaining <= 0) {
+        rt.quests.done.add(a.id);
+        completed = true;
+        client?.send("questDone", { id: a.id, name: def.name });
+      }
+    }
+    if (!changed) return;
+    // 達成したものは active から除去
+    if (completed) rt.quests.active = rt.quests.active.filter((a) => a.remaining > 0);
+    this.persistStats(p);
+    client?.send("questState", this.questStatePayload(rt.quests));
+  }
+
+  // クライアントへ返すクエスト状態（active の残り＋達成/受取済み）。
+  private questStatePayload(q: QuestRt) {
+    return {
+      active: q.active.map((a) => ({ id: a.id, remaining: a.remaining })),
+      done: [...q.done],
+      claimed: [...q.claimed],
+    };
+  }
+
+  // クエストを受注（上限3・重複/達成中/受取済み(一回限り)は不可）。
+  private acceptQuest(sessionId: string, id: string) {
+    const p = this.state.players.get(sessionId);
+    const rt = this.statsRt.get(sessionId);
+    const def = QUEST_BY_ID[id];
+    if (!p || !rt || !def) return;
+    if (rt.quests.active.some((a) => a.id === id)) return;     // 受注中
+    if (rt.quests.done.has(id)) return;                        // 達成・報告待ち
+    if (!def.repeatable && rt.quests.claimed.has(id)) return;  // 一回限りで受取済み
+    if (rt.quests.active.length >= MAX_ACTIVE_QUESTS) return;   // 上限
+    rt.quests.active.push({ id, remaining: def.goal.count });
+    this.persistStats(p);
+    this.clients.find((c) => c.sessionId === sessionId)?.send("questState", this.questStatePayload(rt.quests));
+  }
+
+  // 達成済みクエストを報告して報酬を受け取る。
+  private claimQuest(sessionId: string, id: string) {
+    const p = this.state.players.get(sessionId);
+    const rt = this.statsRt.get(sessionId);
+    const def = QUEST_BY_ID[id];
+    if (!p || !rt || !def) return;
+    if (!rt.quests.done.has(id)) return;                       // 達成していない
+    rt.quests.done.delete(id);                                 // 先に除去（多重受取防止）
+    if (def.repeatable) rt.quests.claimed.delete(id);          // 繰り返し：再受注可能に
+    else rt.quests.claimed.add(id);                            // 一回限り：受取済みとして固定
+    this.grantQuestReward(p, def);
+    this.persistStats(p);
+    this.clients.find((c) => c.sessionId === sessionId)?.send("questState", this.questStatePayload(rt.quests));
+  }
+
+  // クエスト報酬を付与（ゴールド/アイテム/霊宝。すべて既存の付与処理を流用）。
+  private grantQuestReward(p: MmoPlayer, def: QuestDef) {
+    const client = this.clients.find((c) => c.sessionId === p.id);
+    const r = def.reward;
+    if (r.gold) p.gold += r.gold;
+    if (r.item && ITEMS[r.item.id]) this.addItem(p, r.item.id, r.item.n);
+    if (r.relic) this.grantRelic(p, r.rareBias ?? 0); // 在庫から霊宝（relicFound 通知＋蒐集更新は grantRelic 内）
+    client?.send("questReward", {
+      id: def.id, name: def.name,
+      gold: r.gold ?? 0,
+      item: r.item ? { id: r.item.id, n: r.item.n } : null,
+      relic: !!r.relic,
+    });
   }
 
   // mob討伐：種別のドロップ率で霊宝ドロップ（強敵ほど高確率＆レア寄り）。

@@ -15,6 +15,7 @@ import { CARD_ICON, CARD_DESC, RARITY_META, RELIC_IMAGE_NAMES, relicTexKey } fro
 import { ITEM_META, ITEM_ORDER, SPEED_BUFF_MUL, SHOP_ITEMS, SELL_PRICES } from "../spirit/items-meta";
 import { EQUIP_META, SLOTS, EQUIP_SHOP, EQUIP_SELL } from "../spirit/equip-meta";
 import { ACHIEVEMENTS } from "../spirit/achievements";
+import { QUESTS, QUEST_BY_ID, MAX_ACTIVE_QUESTS, type QuestDef } from "../spirit/quests-meta";
 import { getMyProfile, getUser } from "../../auth";
 import { joinPublicRoom } from "../../net";
 import { loadPlayerName } from "../../ui/playerName";
@@ -128,6 +129,14 @@ export class MmoGameScene extends Phaser.Scene {
   private nearTrade = false;
   private tradeLayer?: Phaser.GameObjects.Container;
   private tradeTab: "browse" | "mine" | "create" = "browse";
+  // クエスト受注所（町・近接でE）。受注→討伐→帰還報告で報酬
+  private questPos?: { x: number; y: number };
+  private nearQuest = false;
+  private questLayer?: Phaser.GameObjects.Container;
+  private questTab: "available" | "active" | "report" = "available";
+  private questState: {
+    active: Array<{ id: string; remaining: number }>; done: string[]; claimed: string[];
+  } = { active: [], done: [], claimed: [] };
   private myProfileId?: string;
   private tradeOpen: any[] = [];        // fetchOpenTrades() の結果
   private tradeMyCards: UserCard[] = []; // 自分の所持（count/locked）
@@ -285,6 +294,16 @@ export class MmoGameScene extends Phaser.Scene {
     const tlabel = this.add.text(tx, ty - 40, "取引所", { fontSize: "15px", color: "#9fe0c0", fontStyle: "bold", stroke: "#000", strokeThickness: 3 }).setOrigin(0.5).setDepth(ty);
     this.worldLayer.add([tboard, tstall, ticon, tlabel]);
     box(tx - 46, ty - 12, 92, 38); // 取引所の当たり判定
+
+    // クエスト受注所（掲示板）。近づくと [E] でクエスト一覧（受注/進捗/報告）
+    const qx = 760, qy = 600;
+    this.questPos = { x: qx, y: qy + 24 };
+    const qpost = this.add.rectangle(qx, qy + 8, 70, 30, 0x4a3f2a).setStrokeStyle(2, 0x2a2414).setDepth(qy);
+    const qboard = this.add.rectangle(qx, qy - 16, 96, 36, 0x6b5a2f).setStrokeStyle(2, 0x463a1c).setDepth(qy);
+    const qicon = this.add.text(qx, qy - 16, "📜", { fontSize: "22px" }).setOrigin(0.5).setDepth(qy);
+    const qlabel = this.add.text(qx, qy - 42, "クエスト受注所", { fontSize: "15px", color: "#ffe08a", fontStyle: "bold", stroke: "#000", strokeThickness: 3 }).setOrigin(0.5).setDepth(qy);
+    this.worldLayer.add([qpost, qboard, qicon, qlabel]);
+    box(qx - 48, qy - 14, 96, 40); // 受注所の当たり判定
   }
 
   // 狩場の装飾を散布（テーマで内容が変わる）。非衝突＝見た目のみ
@@ -456,7 +475,8 @@ export class MmoGameScene extends Phaser.Scene {
     this.input.keyboard!.on("keydown-W", () => selKey(0, -1));
     this.input.keyboard!.on("keydown-S", () => selKey(0, 1));
     this.input.keyboard!.on("keydown-ESC", () => {
-      if (this.tradeLayer) this.closeTrade();
+      if (this.questLayer) this.closeQuestBoard();
+      else if (this.tradeLayer) this.closeTrade();
       else if (this.shopLayer) this.closeShop();
       else if (this.worldmapLayer) this.closeWorldMap();
       else if (this.statusLayer) this.closeStatus();
@@ -489,6 +509,7 @@ export class MmoGameScene extends Phaser.Scene {
       if (this.overlayOpen()) return;
       if (this.nearShop) this.openShop();
       else if (this.nearTrade) void this.openTrade();
+      else if (this.nearQuest) this.openQuestBoard();
       else if (this.nearGate) void this.tryTravel();
       else if (this.nearTreasure) this.room.send("openTreasure", { id: this.nearTreasure });
     });
@@ -569,6 +590,13 @@ export class MmoGameScene extends Phaser.Scene {
     this.room.onMessage("treasureOpened", (m: { itemId: string; gold: number }) => this.showTreasureOpened(m.itemId, m.gold));
     this.room.onMessage("achievement", (m: { id: string; desc: string; cardId: number | null }) => this.showAchievement(m));
     this.room.onMessage("chat", (m: { name: string; text: string }) => this.addChatLine(`${m.name}: ${m.text}`));
+    // クエスト
+    this.room.onMessage("questState", (m: { active: Array<{ id: string; remaining: number }>; done: string[]; claimed: string[] }) => {
+      this.questState = { active: m.active ?? [], done: m.done ?? [], claimed: m.claimed ?? [] };
+      if (this.questLayer) this.drawQuestBoard();
+    });
+    this.room.onMessage("questDone", (m: { id: string; name: string }) => this.showQuestDone(m.name));
+    this.room.onMessage("questReward", (m: { id: string; name: string; gold: number; item: { id: string; n: number } | null; relic: boolean }) => this.showQuestReward(m));
   }
 
   // 達成課題クリア時のポップアップ。
@@ -583,6 +611,185 @@ export class MmoGameScene extends Phaser.Scene {
       const reward = this.add.text(0, 30, `報酬: ${CARD_ICON[m.cardId] ?? "✨"} を入手`, { fontSize: "13px", color: "#9b93b0" }).setOrigin(0.5);
       cont.add(reward);
     }
+    cont.setAlpha(0).setScale(0.85);
+    this.tweens.add({ targets: cont, alpha: 1, scale: 1, duration: 260, ease: "Back.easeOut" });
+    sfxRoundStart();
+    this.time.delayedCall(3200, () => {
+      if (!cont.active) return;
+      this.tweens.add({ targets: cont, alpha: 0, y: 210, duration: 320, onComplete: () => cont.destroy() });
+    });
+  }
+
+  // --- クエスト受注所（町でEキー。受注→討伐→帰還報告で報酬） ---
+
+  private openQuestBoard() {
+    if (this.overlayOpen()) return;
+    this.questTab = "available";
+    const layer = this.add.container(0, 0).setScrollFactor(0).setDepth(7000);
+    this.uiLayer.add(layer);
+    this.questLayer = layer;
+    this.room.send("questState", {}); // 最新の受注状態を要求（返信で再描画）
+    this.drawQuestBoard();
+  }
+
+  private closeQuestBoard() {
+    this.questLayer?.destroy();
+    this.questLayer = undefined;
+  }
+
+  // クエストの報酬を1行テキストに整形。
+  private questRewardText(q: QuestDef): string {
+    const parts: string[] = [];
+    if (q.reward.gold) parts.push(`🪙${q.reward.gold}`);
+    if (q.reward.item) {
+      const m = ITEM_META[q.reward.item.id];
+      parts.push(`${m?.icon ?? "🧪"}${m?.name ?? q.reward.item.id}×${q.reward.item.n}`);
+    }
+    if (q.reward.relic) parts.push("✨霊宝×1");
+    return parts.length ? parts.join("　") : "—";
+  }
+
+  private acceptQuest(id: string) {
+    if (this.questState.active.length >= MAX_ACTIVE_QUESTS) return;
+    this.room.send("acceptQuest", { id });
+    sfxScore();
+  }
+
+  private claimQuest(id: string) {
+    this.room.send("claimQuest", { id });
+    sfxScore();
+  }
+
+  private drawQuestBoard() {
+    const layer = this.questLayer; if (!layer) return;
+    layer.removeAll(true);
+    const { width, height } = this.scale;
+    const cx = width / 2;
+    const pw = Math.min(720, width - 80), ph = Math.min(520, height - 80);
+    const px = cx - pw / 2, py = (height - ph) / 2;
+    const T = (x: number, y: number, t: string, size: number, color: string, bold = false) => {
+      const o = this.add.text(x, y, t, { fontSize: `${size}px`, color, fontStyle: bold ? "bold" : "normal" });
+      layer.add(o); return o;
+    };
+    layer.add(this.add.rectangle(cx, height / 2, width, height, 0x000000, 0.85).setInteractive());
+    layer.add(this.add.rectangle(cx, py + ph / 2, pw, ph, 0x161122, 0.98).setStrokeStyle(2, 0x6b5a8f));
+    T(px + 28, py + 22, "📜 クエスト受注所", 24, "#e8c87e", true);
+    T(px + pw - 28, py + 26, `受注 ${this.questState.active.length}/${MAX_ACTIVE_QUESTS}`, 17, "#ffd966", true).setOrigin(1, 0);
+    const close = T(px + pw - 28, py + ph - 30, "✕ 閉じる (Esc / E)", 14, "#cccccc").setOrigin(1, 0).setInteractive({ useHandCursor: true });
+    close.on("pointerdown", () => this.closeQuestBoard());
+
+    const doneCount = this.questState.done.length;
+    const tabs: Array<["available" | "active" | "report", string]> = [
+      ["available", "受注可能"], ["active", "受注中"], ["report", doneCount > 0 ? `報告 (${doneCount})` : "報告"],
+    ];
+    tabs.forEach(([key, label], i) => {
+      const tw = 110, tx = px + 28 + i * (tw + 8), ty = py + 56;
+      const on = this.questTab === key;
+      const tab = this.add.rectangle(tx, ty, tw, 32, on ? 0x3a2f5a : 0x1c1530, 0.95).setOrigin(0, 0)
+        .setStrokeStyle(1, on ? 0x8a7ab5 : 0x3a3550).setInteractive({ useHandCursor: true });
+      tab.on("pointerdown", () => { this.questTab = key; this.drawQuestBoard(); });
+      layer.add(tab);
+      T(tx + tw / 2, ty + 16, label, 15, on ? "#ece7f5" : "#9b93b0", on).setOrigin(0.5);
+    });
+
+    const rowH = 64, listX = px + 28, listW = pw - 56, top = py + 104;
+    const activeIds = new Set(this.questState.active.map((a) => a.id));
+    const doneIds = new Set(this.questState.done);
+    const claimedIds = new Set(this.questState.claimed);
+
+    if (this.questTab === "available") {
+      const list = QUESTS.filter((q) =>
+        !activeIds.has(q.id) && !doneIds.has(q.id) && !(!q.repeatable && claimedIds.has(q.id)));
+      if (list.length === 0) {
+        T(cx, top + 40, "受注できるクエストはありません", 14, "#6a6285").setOrigin(0.5);
+      } else {
+        const full = this.questState.active.length >= MAX_ACTIVE_QUESTS;
+        list.forEach((q, i) => {
+          const ry = top + i * (rowH + 8);
+          layer.add(this.add.rectangle(listX, ry, listW, rowH, 0x1c1530, 0.85).setOrigin(0, 0).setStrokeStyle(1, 0x3a3550));
+          T(listX + 16, ry + 10, `${q.name}${q.repeatable ? "" : "　★一度きり"}`, 16, "#ece7f5", true);
+          T(listX + 16, ry + 32, q.desc, 13, "#bdb6d0");
+          T(listX + 16, ry + 48, `報酬: ${this.questRewardText(q)}`, 13, "#ffd966");
+          const btnW = 120, btnX = listX + listW - btnW - 12, btnY = ry + rowH / 2;
+          const btn = this.add.rectangle(btnX, btnY, btnW, 38, full ? 0x3a3550 : 0x2f7d4f).setOrigin(0, 0.5)
+            .setStrokeStyle(1, full ? 0x4a4360 : 0x57c084);
+          if (!full) btn.setInteractive({ useHandCursor: true }).on("pointerdown", () => this.acceptQuest(q.id));
+          layer.add(btn);
+          T(btnX + btnW / 2, btnY, full ? "受注上限" : "受注する", 15, full ? "#7a7390" : "#ffffff", true).setOrigin(0.5);
+        });
+      }
+      T(cx, py + ph - 30, "受注 → 対象を討伐 → ここに戻って「報告」で報酬", 12, "#6a6285").setOrigin(0.5);
+    } else if (this.questTab === "active") {
+      if (this.questState.active.length === 0) {
+        T(cx, top + 40, "受注中のクエストはありません", 14, "#6a6285").setOrigin(0.5);
+      } else {
+        this.questState.active.forEach((a, i) => {
+          const q = QUEST_BY_ID[a.id]; if (!q) return;
+          const ry = top + i * (rowH + 8);
+          const total = q.goal.count, cur = Math.max(0, total - a.remaining);
+          layer.add(this.add.rectangle(listX, ry, listW, rowH, 0x1c1530, 0.85).setOrigin(0, 0).setStrokeStyle(1, 0x3a3550));
+          T(listX + 16, ry + 10, q.name, 16, "#ece7f5", true);
+          T(listX + 16, ry + 32, q.desc, 13, "#bdb6d0");
+          // 進捗バー
+          const barX = listX + 16, barY = ry + 50, barW = listW - 180, barH = 10;
+          layer.add(this.add.rectangle(barX, barY, barW, barH, 0x2a2440).setOrigin(0, 0.5).setStrokeStyle(1, 0x3a3550));
+          layer.add(this.add.rectangle(barX, barY, Math.max(0, Math.min(1, cur / total)) * barW, barH, 0x57c084).setOrigin(0, 0.5));
+          T(listX + listW - 150, ry + rowH / 2, `${cur} / ${total}`, 15, "#ffd966", true).setOrigin(0, 0.5);
+        });
+      }
+      T(cx, py + ph - 30, "達成したら受注所に戻って「報告」タブで受け取り", 12, "#6a6285").setOrigin(0.5);
+    } else {
+      const list = this.questState.done.map((id) => QUEST_BY_ID[id]).filter(Boolean) as QuestDef[];
+      if (list.length === 0) {
+        T(cx, top + 40, "報告できる達成クエストはありません", 14, "#6a6285").setOrigin(0.5);
+      } else {
+        list.forEach((q, i) => {
+          const ry = top + i * (rowH + 8);
+          layer.add(this.add.rectangle(listX, ry, listW, rowH, 0x231a36, 0.9).setOrigin(0, 0).setStrokeStyle(1, 0xffd966));
+          T(listX + 16, ry + 12, `${q.name}　✅達成！`, 16, "#ece7f5", true);
+          T(listX + 16, ry + 40, `報酬: ${this.questRewardText(q)}`, 13, "#ffd966");
+          const btnW = 150, btnX = listX + listW - btnW - 12, btnY = ry + rowH / 2;
+          const btn = this.add.rectangle(btnX, btnY, btnW, 40, 0x7d5a2f).setOrigin(0, 0.5).setStrokeStyle(1, 0xc0894f)
+            .setInteractive({ useHandCursor: true });
+          btn.on("pointerdown", () => this.claimQuest(q.id));
+          layer.add(btn);
+          T(btnX + btnW / 2, btnY, "報酬を受け取る", 15, "#ffffff", true).setOrigin(0.5);
+        });
+      }
+      T(cx, py + ph - 30, "報酬を受け取ると、繰り返し可能なクエストは再受注できます", 12, "#6a6285").setOrigin(0.5);
+    }
+  }
+
+  // クエスト達成（討伐中に条件達成）時の軽い通知。
+  private showQuestDone(name: string) {
+    const cont = this.add.container(this.scale.width / 2, 300).setScrollFactor(0).setDepth(5200);
+    this.uiLayer.add(cont);
+    const bg = this.add.rectangle(0, 0, 340, 64, 0x1a1530, 0.97).setStrokeStyle(3, 0x57c084);
+    const title = this.add.text(0, -12, "🎯 クエスト達成！", { fontSize: "16px", color: "#7be0a0", fontStyle: "bold" }).setOrigin(0.5);
+    const desc = this.add.text(0, 12, `「${name}」受注所で報告を`, { fontSize: "13px", color: "#ece7f5" }).setOrigin(0.5);
+    cont.add([bg, title, desc]);
+    cont.setAlpha(0).setScale(0.85);
+    this.tweens.add({ targets: cont, alpha: 1, scale: 1, duration: 240, ease: "Back.easeOut" });
+    sfxRoundStart();
+    this.time.delayedCall(3000, () => {
+      if (!cont.active) return;
+      this.tweens.add({ targets: cont, alpha: 0, y: 280, duration: 320, onComplete: () => cont.destroy() });
+    });
+  }
+
+  // クエスト報告（報酬受取）時のポップアップ。
+  private showQuestReward(m: { name: string; gold: number; item: { id: string; n: number } | null; relic: boolean }) {
+    const cont = this.add.container(this.scale.width / 2, 230).setScrollFactor(0).setDepth(5200);
+    this.uiLayer.add(cont);
+    const bg = this.add.rectangle(0, 0, 360, 92, 0x1a1530, 0.97).setStrokeStyle(3, 0xffd966);
+    const title = this.add.text(0, -26, "🎯 クエスト報告完了！", { fontSize: "18px", color: "#ffd966", fontStyle: "bold" }).setOrigin(0.5);
+    const desc = this.add.text(0, 2, m.name, { fontSize: "14px", color: "#ece7f5" }).setOrigin(0.5);
+    const parts: string[] = [];
+    if (m.gold) parts.push(`🪙${m.gold}`);
+    if (m.item) { const im = ITEM_META[m.item.id]; parts.push(`${im?.icon ?? "🧪"}${im?.name ?? m.item.id}×${m.item.n}`); }
+    if (m.relic) parts.push("✨霊宝×1");
+    const reward = this.add.text(0, 28, `報酬: ${parts.join("　") || "—"}`, { fontSize: "13px", color: "#9b93b0" }).setOrigin(0.5);
+    cont.add([bg, title, desc, reward]);
     cont.setAlpha(0).setScale(0.85);
     this.tweens.add({ targets: cont, alpha: 1, scale: 1, duration: 260, ease: "Back.easeOut" });
     sfxRoundStart();
@@ -1631,7 +1838,7 @@ export class MmoGameScene extends Phaser.Scene {
     this.binderLayer = undefined;
   }
 
-  private overlayOpen(): boolean { return !!(this.binderLayer || this.statusLayer || this.worldmapLayer || this.shopLayer || this.tradeLayer); }
+  private overlayOpen(): boolean { return !!(this.binderLayer || this.statusLayer || this.worldmapLayer || this.shopLayer || this.tradeLayer || this.questLayer); }
 
   // --- チャット（/ で開く）---
 
@@ -1903,8 +2110,9 @@ export class MmoGameScene extends Phaser.Scene {
       this.nearGate = near;
       this.nearShop = !near && !!this.shopPos && Math.hypot(me.x - this.shopPos.x, me.y - this.shopPos.y) <= 90;
       this.nearTrade = !near && !this.nearShop && !!this.tradePos && Math.hypot(me.x - this.tradePos.x, me.y - this.tradePos.y) <= 90;
+      this.nearQuest = !near && !this.nearShop && !this.nearTrade && !!this.questPos && Math.hypot(me.x - this.questPos.x, me.y - this.questPos.y) <= 90;
       this.nearTreasure = null;
-      if (!near && !this.nearShop && !this.nearTrade) {
+      if (!near && !this.nearShop && !this.nearTrade && !this.nearQuest) {
         let bestD = 44;
         this.treasureViews.forEach((c, id) => {
           const d = Math.hypot(me.x - c.x, me.y - c.y);
@@ -1914,12 +2122,14 @@ export class MmoGameScene extends Phaser.Scene {
       if (near) this.gatePrompt?.setText(`[E] ${near.label}`).setVisible(true);
       else if (this.nearShop) this.gatePrompt?.setText("[E] ショップ").setVisible(true);
       else if (this.nearTrade) this.gatePrompt?.setText("[E] 取引所").setVisible(true);
+      else if (this.nearQuest) this.gatePrompt?.setText("[E] クエスト受注所").setVisible(true);
       else if (this.nearTreasure) this.gatePrompt?.setText("[E] 宝箱を開ける").setVisible(true);
       else this.gatePrompt?.setVisible(false);
     } else {
       this.nearGate = null;
       this.nearShop = false;
       this.nearTrade = false;
+      this.nearQuest = false;
       this.nearTreasure = null;
       this.gatePrompt?.setVisible(false);
     }
