@@ -87,7 +87,6 @@ export class BombermanGameScene extends Phaser.Scene {
   // 押されている方向キーを「押した順」で保持。先に押した方向を優先する。
   private dirOrder: Array<"up" | "down" | "left" | "right"> = [];
   private touch!: TouchControls;  // スマホ向け画面上タッチ操作
-  private builtLandscape = false; // このシーンを作った時の向き（回転検知用）
 
   // 自キャラのローカル予測。サーバー初回位置で初期化する。
   private predict: PredictState | null = null;
@@ -112,32 +111,13 @@ export class BombermanGameScene extends Phaser.Scene {
     const gridW = state.cols * this.ts;
     const gridH = state.rows * this.ts;
 
-    // 内部解像度を端末画面の縦横比ぴったりに合わせる → FIT の黒帯がゼロになり、
-    // 画面全体がゲーム(グレー)領域＝どこを触っても操作できる（指が枠外に出て操作が切れる問題を解消）。
-    // 横でも縦でも黒帯なしで埋まる。盤面の ts はサーバー座標と一致させるため固定し、盤面は中央に内包。
-    const screenW = window.innerWidth || 800;
-    const screenH = window.innerHeight || 600;
-    const aspect = screenW / screenH;
-    const MARGIN = 40;
-    let width = gridW + MARGIN * 2;
-    let height = gridH + MARGIN * 2;
-    if (width / height < aspect) width = Math.round(height * aspect);
-    else height = Math.round(width / aspect);
-    this.scale.setGameSize(width, height);
-    this.scale.refresh(); // 内部解像度変更後にキャンバス表示サイズを再計算（横伸び/縦潰れ防止）
-    // シーン離脱時は元の 1600x900 へ戻す（他シーンへ影響させない）
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-      this.scale.setGameSize(1600, 900);
-      this.scale.refresh();
-    });
-
+    // 固定 1600x900 の FIT で描画する（歪み無し・回転は FIT が自動で再フィット）。
+    // 盤面は中央に置き、左右の余白に UI を配置する。盤面の ts はサーバー座標と一致のため固定。
+    const width = this.scale.width;   // 1600
+    const height = this.scale.height; // 900
     const landscape = width >= height;
-    this.builtLandscape = landscape;
     this.offsetX = Math.floor((width - gridW) / 2);
-    // 縦持ちは盤面を上寄せ(下に操作余白)、横持ちは中央寄せ(左右に余白)。
-    this.offsetY = landscape
-      ? Math.floor((height - gridH) / 2)
-      : Math.max(64, Math.floor((height - gridH) * 0.32));
+    this.offsetY = Math.floor((height - gridH) / 2);
     const boardBottom = this.offsetY + gridH;
     const boardRight = this.offsetX + gridW;
 
@@ -231,17 +211,6 @@ export class BombermanGameScene extends Phaser.Scene {
     });
     this.input.keyboard!.on("keydown-ESC", () => this.room.leave());
 
-    // 端末を回転して縦横が入れ替わったら、その向き用のサイズ/配置に作り直す。
-    // ScaleManager の RESIZE と window イベントの両方で検知（端末/ブラウザ差を吸収）。
-    this.scale.on(Phaser.Scale.Events.RESIZE, this.handleOrientation, this);
-    window.addEventListener("resize", this.onWindowResize);
-    window.addEventListener("orientationchange", this.onWindowResize);
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-      this.scale.off(Phaser.Scale.Events.RESIZE, this.handleOrientation, this);
-      window.removeEventListener("resize", this.onWindowResize);
-      window.removeEventListener("orientationchange", this.onWindowResize);
-    });
-
     const $ = getStateCallbacks(this.room);
 
     $(state).players.onAdd((p: any, id: string) => this.addPlayer(id, p));
@@ -268,24 +237,6 @@ export class BombermanGameScene extends Phaser.Scene {
     this.room.onLeave(() => this.scene.start("BombermanLobby"));
 
     this.onPhaseChanged();
-  }
-
-  // window の resize/orientationchange 用。回転直後は innerWidth/Height が未確定なことが
-  // あるので、少し遅らせてから判定する。
-  private onWindowResize = () => {
-    this.time.delayedCall(180, () => this.handleOrientation());
-  };
-
-  // 端末回転で縦↔横が入れ替わったらシーンを作り直し、その向き用のサイズ/配置に切り替える。
-  // （自前 setGameSize 由来の RESIZE では向きは変わらないので無限ループしない）
-  private handleOrientation() {
-    const nowLandscape = (window.innerWidth || 1) >= (window.innerHeight || 1);
-    if (nowLandscape === this.builtLandscape) return;
-    // 先にリスナーを外してから restart（shutdown 時の setGameSize で再入しないように）
-    this.scale.off(Phaser.Scale.Events.RESIZE, this.handleOrientation, this);
-    window.removeEventListener("resize", this.onWindowResize);
-    window.removeEventListener("orientationchange", this.onWindowResize);
-    this.scene.restart({ room: this.room });
   }
 
   update(_t: number, dtMs: number) {
