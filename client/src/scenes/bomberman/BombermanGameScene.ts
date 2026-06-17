@@ -87,6 +87,7 @@ export class BombermanGameScene extends Phaser.Scene {
   // 押されている方向キーを「押した順」で保持。先に押した方向を優先する。
   private dirOrder: Array<"up" | "down" | "left" | "right"> = [];
   private touch!: TouchControls;  // スマホ向け画面上タッチ操作
+  private builtLandscape = false; // このシーンを作った時の向き（回転検知用）
 
   // 自キャラのローカル予測。サーバー初回位置で初期化する。
   private predict: PredictState | null = null;
@@ -127,6 +128,7 @@ export class BombermanGameScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.scale.setGameSize(1600, 900));
 
     const landscape = width >= height;
+    this.builtLandscape = landscape;
     this.offsetX = Math.floor((width - gridW) / 2);
     // 縦持ちは盤面を上寄せ(下に操作余白)、横持ちは中央寄せ(左右に余白)。
     this.offsetY = landscape
@@ -225,6 +227,11 @@ export class BombermanGameScene extends Phaser.Scene {
     });
     this.input.keyboard!.on("keydown-ESC", () => this.room.leave());
 
+    // 端末を回転して縦横が入れ替わったら、その向き用のサイズ/配置に作り直す。
+    this.scale.on(Phaser.Scale.Events.RESIZE, this.handleOrientation, this);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () =>
+      this.scale.off(Phaser.Scale.Events.RESIZE, this.handleOrientation, this));
+
     const $ = getStateCallbacks(this.room);
 
     $(state).players.onAdd((p: any, id: string) => this.addPlayer(id, p));
@@ -251,6 +258,16 @@ export class BombermanGameScene extends Phaser.Scene {
     this.room.onLeave(() => this.scene.start("BombermanLobby"));
 
     this.onPhaseChanged();
+  }
+
+  // 端末回転で縦↔横が入れ替わったらシーンを作り直し、その向き用のサイズ/配置に切り替える。
+  // （自前 setGameSize 由来の RESIZE では向きは変わらないので無限ループしない）
+  private handleOrientation() {
+    const nowLandscape = (window.innerWidth || 1) >= (window.innerHeight || 1);
+    if (nowLandscape === this.builtLandscape) return;
+    // 先にリスナーを外してから restart（shutdown 時の setGameSize で再入しないように）
+    this.scale.off(Phaser.Scale.Events.RESIZE, this.handleOrientation, this);
+    this.scene.restart({ room: this.room });
   }
 
   update(_t: number, dtMs: number) {
