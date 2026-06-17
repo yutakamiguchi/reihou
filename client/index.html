@@ -2,11 +2,14 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>Unspottable Web</title>
   <style>
-    html, body { margin: 0; padding: 0; background: #111; color: #eee; font-family: system-ui, sans-serif; overflow: hidden; }
-    #game { display: flex; justify-content: center; align-items: center; height: 100vh; }
+    html, body { margin: 0; padding: 0; background: #111; color: #eee; font-family: system-ui, sans-serif; overflow: hidden;
+      /* スマホでのスクロール/長押し選択/タップ拡大を抑止し、ゲーム操作に集中させる */
+      touch-action: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
+      overscroll-behavior: none; }
+    #game { display: flex; justify-content: center; align-items: center; width: 100vw; height: 100vh; height: 100dvh; }
   </style>
 </head>
 <body>

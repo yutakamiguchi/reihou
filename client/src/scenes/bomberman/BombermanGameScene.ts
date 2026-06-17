@@ -5,6 +5,7 @@ import {
 } from "../../character";
 import { sfxHitPlayer, sfxScore, sfxRoundStart, sfxRoundEnd } from "../../sfx";
 import { addMoveKeys } from "../../ui/inputKeys";
+import { addTouchControls, type TouchControls } from "../../ui/touchControls";
 
 const CHAR_DISPLAY_H = 48;
 
@@ -85,6 +86,7 @@ export class BombermanGameScene extends Phaser.Scene {
   };
   // 押されている方向キーを「押した順」で保持。先に押した方向を優先する。
   private dirOrder: Array<"up" | "down" | "left" | "right"> = [];
+  private touch!: TouchControls;  // スマホ向け画面上タッチ操作
 
   // 自キャラのローカル予測。サーバー初回位置で初期化する。
   private predict: PredictState | null = null;
@@ -104,13 +106,36 @@ export class BombermanGameScene extends Phaser.Scene {
   }
 
   create() {
-    const { width, height } = this.scale;
     const state: any = this.room.state;
     this.ts = state.tileSize;
     const gridW = state.cols * this.ts;
     const gridH = state.rows * this.ts;
+
+    // スマホは内部解像度を画面の縦横比に合わせて作り直し、黒帯を消して盤面を画面いっぱいに。
+    // （盤面の ts はサーバー座標と一致させるため固定。代わりにキャンバス側を画面に寄せる）
+    const dev = this.sys.game.device;
+    const isMobile = dev.input.touch && !dev.os.desktop;
+    let width: number, height: number;
+    if (isMobile) {
+      const aspect = (window.innerWidth || 1) / (window.innerHeight || 1);
+      if (aspect < 1) {              // 縦持ち: 高さ基準で幅を画面比に合わせる
+        height = 1600;
+        width = Math.max(Math.round(height * aspect), gridW + 48);
+      } else {                       // 横持ち: 幅基準で高さを画面比に合わせる
+        width = 1600;
+        height = Math.max(Math.round(width / aspect), gridH + 160);
+      }
+      this.scale.setGameSize(width, height);
+      // シーン離脱時は元の 1600x900 へ戻す（他シーンへ影響させない）
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.scale.setGameSize(1600, 900));
+    } else {
+      ({ width, height } = this.scale);
+    }
+    const portrait = height > width;
+
     this.offsetX = Math.floor((width - gridW) / 2);
-    this.offsetY = Math.floor((height - gridH) / 2) + 20;
+    // 縦持ちは盤面を上寄せにして、下側にタッチ操作の余白を確保
+    this.offsetY = portrait ? 110 : Math.floor((height - gridH) / 2) + 20;
 
     this.add.rectangle(width / 2, height / 2, width, height, 0x2a2f3a).setDepth(-10);
 
@@ -187,6 +212,11 @@ export class BombermanGameScene extends Phaser.Scene {
 
     this.keys = addMoveKeys(this);
     this.keys.SPACE.on("down", () => this.room.send("placeBomb"));
+    // スマホ: 仮想ジョイスティック＋ボムボタン（タッチ端末のみ表示）
+    this.touch = addTouchControls(this, {
+      onAction: () => this.room.send("placeBomb"),
+      actionLabel: "💣",
+    });
     this.input.keyboard!.on("keydown-ESC", () => this.room.leave());
 
     const $ = getStateCallbacks(this.room);
@@ -224,11 +254,12 @@ export class BombermanGameScene extends Phaser.Scene {
     // 押下状態から「先押し優先の単一方向」を求める。
     // 斜め同時押しでも1方向だけに絞ることで、予測とサーバーの判断を一致させ
     // 本番のレイテンシ下での壁めり込み/ズレを防ぐ。
+    const t = this.touch.held;
     const held = {
-      up: this.keys.W.isDown || this.keys.UP.isDown,
-      down: this.keys.S.isDown || this.keys.DOWN.isDown,
-      left: this.keys.A.isDown || this.keys.LEFT.isDown,
-      right: this.keys.D.isDown || this.keys.RIGHT.isDown,
+      up: this.keys.W.isDown || this.keys.UP.isDown || t.up,
+      down: this.keys.S.isDown || this.keys.DOWN.isDown || t.down,
+      left: this.keys.A.isDown || this.keys.LEFT.isDown || t.left,
+      right: this.keys.D.isDown || this.keys.RIGHT.isDown || t.right,
     };
     // 新たに押された方向を順序の末尾へ、離された方向は除去
     (["up", "down", "left", "right"] as const).forEach((d) => {
