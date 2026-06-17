@@ -111,41 +111,52 @@ export class BombermanGameScene extends Phaser.Scene {
     const gridW = state.cols * this.ts;
     const gridH = state.rows * this.ts;
 
-    // 盤面ぴったりに内部キャンバスを縮め、FIT スケールで盤面を画面いっぱいに拡大する。
-    // 上＝細いタイマー帯 / 下＝ロビー操作・タッチ操作の帯。盤面の ts はサーバー座標と一致させるため固定。
-    const TOP = 56, BOTTOM = 210, SIDE = 24;
-    const width = gridW + SIDE * 2;
-    const height = gridH + TOP + BOTTOM;
+    // 内部解像度を端末画面の縦横比ぴったりに合わせる → FIT の黒帯がゼロになり、
+    // 画面全体がゲーム(グレー)領域＝どこを触っても操作できる（指が枠外に出て操作が切れる問題を解消）。
+    // 横でも縦でも黒帯なしで埋まる。盤面の ts はサーバー座標と一致させるため固定し、盤面は中央に内包。
+    const screenW = window.innerWidth || 800;
+    const screenH = window.innerHeight || 600;
+    const aspect = screenW / screenH;
+    const MARGIN = 40;
+    let width = gridW + MARGIN * 2;
+    let height = gridH + MARGIN * 2;
+    if (width / height < aspect) width = Math.round(height * aspect);
+    else height = Math.round(width / aspect);
     this.scale.setGameSize(width, height);
     // シーン離脱時は元の 1600x900 へ戻す（他シーンへ影響させない）
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.scale.setGameSize(1600, 900));
 
-    this.offsetX = SIDE;
-    this.offsetY = TOP;
-    const boardBottom = this.offsetY + gridH;  // 盤面下端 = 下部UI帯の基準
+    const landscape = width >= height;
+    this.offsetX = Math.floor((width - gridW) / 2);
+    // 縦持ちは盤面を上寄せ(下に操作余白)、横持ちは中央寄せ(左右に余白)。
+    this.offsetY = landscape
+      ? Math.floor((height - gridH) / 2)
+      : Math.max(64, Math.floor((height - gridH) * 0.32));
+    const boardBottom = this.offsetY + gridH;
+    const boardRight = this.offsetX + gridW;
 
     this.add.rectangle(width / 2, height / 2, width, height, 0x2a2f3a).setDepth(-10);
 
     this.buildWarpPairs();
     this.rebuildGrid(); // tiles から壁・ベルト・ワープを描画
-    this.add.rectangle(width / 2, this.offsetY + gridH / 2, gridW + 4, gridH + 4, 0, 0)
+    this.add.rectangle(this.offsetX + gridW / 2, this.offsetY + gridH / 2, gridW + 4, gridH + 4, 0, 0)
       .setStrokeStyle(4, 0x1a1d24);
 
     this.worldLayer = this.add.layer();
 
-    // タイマー（上の細い帯・中央）
-    this.timerText = this.add.text(width / 2, 12, "", {
+    // タイマー（盤面の上の余白・中央）
+    this.timerText = this.add.text(width / 2, Math.max(8, this.offsetY - 40), "", {
       fontSize: "30px", color: "#ffffff", fontStyle: "bold", stroke: "#000", strokeThickness: 4,
     }).setOrigin(0.5, 0).setDepth(1000);
-    // 生存数（下帯・左）。ロビーの「人数」表示は廃止して上部をすっきりさせる。
-    this.hud = this.add.text(SIDE, boardBottom + 8, "", { fontSize: "16px", color: "#cccccc" }).setDepth(1000);
+    // 生存数（盤面の下・左）。ロビーの「人数」表示は廃止して上部をすっきりさせる。
+    this.hud = this.add.text(this.offsetX, boardBottom + 8, "", { fontSize: "16px", color: "#cccccc" }).setDepth(1000);
     // 大きな状態表示（START!/勝敗）は盤面中央にオーバーレイ
-    this.phaseText = this.add.text(width / 2, this.offsetY + gridH / 2, "", {
+    this.phaseText = this.add.text(this.offsetX + gridW / 2, this.offsetY + gridH / 2, "", {
       fontSize: "40px", color: "#ffe066", stroke: "#000", strokeThickness: 5,
     }).setOrigin(0.5).setDepth(2000);
 
     if (state.code) {
-      const codeBox = this.add.text(SIDE, boardBottom + 34, `ROOM CODE: ${state.code}`, {
+      const codeBox = this.add.text(this.offsetX, boardBottom + 34, `ROOM CODE: ${state.code}`, {
         fontSize: "16px", color: "#ffe066", fontStyle: "bold",
         backgroundColor: "#1a1d24", padding: { x: 8, y: 4 } as any,
       }).setDepth(1000).setInteractive({ useHandCursor: true });
@@ -156,16 +167,19 @@ export class BombermanGameScene extends Phaser.Scene {
       });
     }
 
-    // WINS（下帯・右）
-    const scorePanel = this.add.rectangle(width - SIDE, boardBottom + 6, 170, BOTTOM - 18, 0x000000, 0.5)
-      .setOrigin(1, 0).setStrokeStyle(2, 0x666666).setDepth(999);
-    void scorePanel;
-    this.scoreBox = this.add.container(width - SIDE - 170 + 12, boardBottom + 14).setDepth(1000);
+    // WINS パネル: 横持ちは左余白の上、縦持ちは盤面下の右。
+    const winW = 150;
+    const winX = landscape ? 16 : width - 16 - winW;
+    const winY = landscape ? this.offsetY : boardBottom + 8;
+    this.add.rectangle(winX, winY, winW, 150, 0x000000, 0.5)
+      .setOrigin(0, 0).setStrokeStyle(2, 0x666666).setDepth(999);
+    this.scoreBox = this.add.container(winX + 12, winY + 8).setDepth(1000);
     this.scoreBox.add(this.add.text(0, 0, "WINS", { fontSize: "14px", color: "#aaaaaa", fontStyle: "bold" }));
 
-    // ロビー操作（盤面の下・中央。ロビー中のみ表示）
-    const lobbyY = boardBottom + 20;
-    this.readyButton = this.add.text(width / 2, lobbyY, "[ 準備 OK ]", {
+    // ロビー操作（ロビー中のみ表示）: 横持ちは右余白に縦積み、縦持ちは盤面下に縦積み。
+    const uiCx = landscape ? Math.round((boardRight + width) / 2) : Math.round(width / 2);
+    const uiTop = landscape ? this.offsetY + 30 : boardBottom + 28;
+    this.readyButton = this.add.text(uiCx, uiTop, "[ 準備 OK ]", {
       fontSize: "28px", color: "#7ee787", backgroundColor: "#222",
       padding: { x: 16, y: 8 } as any, fontStyle: "bold",
     }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true }).setDepth(1000);
@@ -174,27 +188,27 @@ export class BombermanGameScene extends Phaser.Scene {
       this.readyButton.setText("準備済み...").disableInteractive();
     });
 
-    this.addCpuButton = this.add.text(width / 2 - 90, lobbyY + 54, "[ ＋CPU ]", {
+    this.addCpuButton = this.add.text(uiCx - 90, uiTop + 54, "[ ＋CPU ]", {
       fontSize: "20px", color: "#7ec0e7", backgroundColor: "#222",
       padding: { x: 12, y: 6 } as any, fontStyle: "bold",
     }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true }).setDepth(1000);
     this.addCpuButton.on("pointerdown", () => this.room.send("addBot"));
 
-    this.removeCpuButton = this.add.text(width / 2 + 90, lobbyY + 54, "[ －CPU ]", {
+    this.removeCpuButton = this.add.text(uiCx + 90, uiTop + 54, "[ －CPU ]", {
       fontSize: "20px", color: "#e7a07e", backgroundColor: "#222",
       padding: { x: 12, y: 6 } as any, fontStyle: "bold",
     }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true }).setDepth(1000);
     this.removeCpuButton.on("pointerdown", () => this.room.send("removeBot"));
 
     // マップ選択（ロビー中のみ）。誰でも変更可（CPUボタンに倣う）。
-    this.mapLabel = this.add.text(width / 2, lobbyY + 100, "マップ:", {
+    this.mapLabel = this.add.text(uiCx, uiTop + 100, "マップ:", {
       fontSize: "16px", color: "#cccccc",
     }).setOrigin(0.5, 0).setDepth(1000);
     const total = MAP_CHOICES.length;
-    const bw = 96, gap = 8;
-    const startX = width / 2 - (total * bw + (total - 1) * gap) / 2 + bw / 2;
+    const bw = 88, gap = 8;
+    const startX = uiCx - (total * bw + (total - 1) * gap) / 2 + bw / 2;
     MAP_CHOICES.forEach((m, i) => {
-      const btn = this.add.text(startX + i * (bw + gap), lobbyY + 128, m.name, {
+      const btn = this.add.text(startX + i * (bw + gap), uiTop + 128, m.name, {
         fontSize: "16px", color: "#cccccc", backgroundColor: "#222",
         padding: { x: 8, y: 6 } as any,
       }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true }).setDepth(1000);
