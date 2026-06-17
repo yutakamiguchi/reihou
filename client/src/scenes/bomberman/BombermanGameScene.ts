@@ -124,8 +124,12 @@ export class BombermanGameScene extends Phaser.Scene {
     if (width / height < aspect) width = Math.round(height * aspect);
     else height = Math.round(width / aspect);
     this.scale.setGameSize(width, height);
+    this.scale.refresh(); // 内部解像度変更後にキャンバス表示サイズを再計算（横伸び/縦潰れ防止）
     // シーン離脱時は元の 1600x900 へ戻す（他シーンへ影響させない）
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.scale.setGameSize(1600, 900));
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.scale.setGameSize(1600, 900);
+      this.scale.refresh();
+    });
 
     const landscape = width >= height;
     this.builtLandscape = landscape;
@@ -228,9 +232,15 @@ export class BombermanGameScene extends Phaser.Scene {
     this.input.keyboard!.on("keydown-ESC", () => this.room.leave());
 
     // 端末を回転して縦横が入れ替わったら、その向き用のサイズ/配置に作り直す。
+    // ScaleManager の RESIZE と window イベントの両方で検知（端末/ブラウザ差を吸収）。
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleOrientation, this);
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () =>
-      this.scale.off(Phaser.Scale.Events.RESIZE, this.handleOrientation, this));
+    window.addEventListener("resize", this.onWindowResize);
+    window.addEventListener("orientationchange", this.onWindowResize);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.scale.off(Phaser.Scale.Events.RESIZE, this.handleOrientation, this);
+      window.removeEventListener("resize", this.onWindowResize);
+      window.removeEventListener("orientationchange", this.onWindowResize);
+    });
 
     const $ = getStateCallbacks(this.room);
 
@@ -260,6 +270,12 @@ export class BombermanGameScene extends Phaser.Scene {
     this.onPhaseChanged();
   }
 
+  // window の resize/orientationchange 用。回転直後は innerWidth/Height が未確定なことが
+  // あるので、少し遅らせてから判定する。
+  private onWindowResize = () => {
+    this.time.delayedCall(180, () => this.handleOrientation());
+  };
+
   // 端末回転で縦↔横が入れ替わったらシーンを作り直し、その向き用のサイズ/配置に切り替える。
   // （自前 setGameSize 由来の RESIZE では向きは変わらないので無限ループしない）
   private handleOrientation() {
@@ -267,6 +283,8 @@ export class BombermanGameScene extends Phaser.Scene {
     if (nowLandscape === this.builtLandscape) return;
     // 先にリスナーを外してから restart（shutdown 時の setGameSize で再入しないように）
     this.scale.off(Phaser.Scale.Events.RESIZE, this.handleOrientation, this);
+    window.removeEventListener("resize", this.onWindowResize);
+    window.removeEventListener("orientationchange", this.onWindowResize);
     this.scene.restart({ room: this.room });
   }
 
