@@ -111,31 +111,18 @@ export class BombermanGameScene extends Phaser.Scene {
     const gridW = state.cols * this.ts;
     const gridH = state.rows * this.ts;
 
-    // スマホは内部解像度を画面の縦横比に合わせて作り直し、黒帯を消して盤面を画面いっぱいに。
-    // （盤面の ts はサーバー座標と一致させるため固定。代わりにキャンバス側を画面に寄せる）
-    const dev = this.sys.game.device;
-    const isMobile = dev.input.touch && !dev.os.desktop;
-    let width: number, height: number;
-    if (isMobile) {
-      const aspect = (window.innerWidth || 1) / (window.innerHeight || 1);
-      if (aspect < 1) {              // 縦持ち: 高さ基準で幅を画面比に合わせる
-        height = 1600;
-        width = Math.max(Math.round(height * aspect), gridW + 48);
-      } else {                       // 横持ち: 幅基準で高さを画面比に合わせる
-        width = 1600;
-        height = Math.max(Math.round(width / aspect), gridH + 160);
-      }
-      this.scale.setGameSize(width, height);
-      // シーン離脱時は元の 1600x900 へ戻す（他シーンへ影響させない）
-      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.scale.setGameSize(1600, 900));
-    } else {
-      ({ width, height } = this.scale);
-    }
-    const portrait = height > width;
+    // 盤面ぴったりに内部キャンバスを縮め、FIT スケールで盤面を画面いっぱいに拡大する。
+    // 上＝細いタイマー帯 / 下＝ロビー操作・タッチ操作の帯。盤面の ts はサーバー座標と一致させるため固定。
+    const TOP = 56, BOTTOM = 210, SIDE = 24;
+    const width = gridW + SIDE * 2;
+    const height = gridH + TOP + BOTTOM;
+    this.scale.setGameSize(width, height);
+    // シーン離脱時は元の 1600x900 へ戻す（他シーンへ影響させない）
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.scale.setGameSize(1600, 900));
 
-    this.offsetX = Math.floor((width - gridW) / 2);
-    // 縦持ちは盤面を上寄せにして、下側にタッチ操作の余白を確保
-    this.offsetY = portrait ? 110 : Math.floor((height - gridH) / 2) + 20;
+    this.offsetX = SIDE;
+    this.offsetY = TOP;
+    const boardBottom = this.offsetY + gridH;  // 盤面下端 = 下部UI帯の基準
 
     this.add.rectangle(width / 2, height / 2, width, height, 0x2a2f3a).setDepth(-10);
 
@@ -146,16 +133,19 @@ export class BombermanGameScene extends Phaser.Scene {
 
     this.worldLayer = this.add.layer();
 
-    this.timerText = this.add.text(width / 2, 14, "", {
-      fontSize: "32px", color: "#ffffff", fontStyle: "bold", stroke: "#000", strokeThickness: 4,
+    // タイマー（上の細い帯・中央）
+    this.timerText = this.add.text(width / 2, 12, "", {
+      fontSize: "30px", color: "#ffffff", fontStyle: "bold", stroke: "#000", strokeThickness: 4,
     }).setOrigin(0.5, 0).setDepth(1000);
-    this.hud = this.add.text(12, 12, "", { fontSize: "14px", color: "#cccccc" }).setDepth(1000);
-    this.phaseText = this.add.text(width / 2, 60, "", {
-      fontSize: "22px", color: "#ffe066", stroke: "#000", strokeThickness: 3,
-    }).setOrigin(0.5).setDepth(1000);
+    // 生存数（下帯・左）。ロビーの「人数」表示は廃止して上部をすっきりさせる。
+    this.hud = this.add.text(SIDE, boardBottom + 8, "", { fontSize: "16px", color: "#cccccc" }).setDepth(1000);
+    // 大きな状態表示（START!/勝敗）は盤面中央にオーバーレイ
+    this.phaseText = this.add.text(width / 2, this.offsetY + gridH / 2, "", {
+      fontSize: "40px", color: "#ffe066", stroke: "#000", strokeThickness: 5,
+    }).setOrigin(0.5).setDepth(2000);
 
     if (state.code) {
-      const codeBox = this.add.text(12, 36, `ROOM CODE: ${state.code}`, {
+      const codeBox = this.add.text(SIDE, boardBottom + 34, `ROOM CODE: ${state.code}`, {
         fontSize: "16px", color: "#ffe066", fontStyle: "bold",
         backgroundColor: "#1a1d24", padding: { x: 8, y: 4 } as any,
       }).setDepth(1000).setInteractive({ useHandCursor: true });
@@ -166,46 +156,48 @@ export class BombermanGameScene extends Phaser.Scene {
       });
     }
 
-    const scorePanel = this.add.rectangle(width - 12, 12, 200, 130, 0x000000, 0.5)
+    // WINS（下帯・右）
+    const scorePanel = this.add.rectangle(width - SIDE, boardBottom + 6, 170, BOTTOM - 18, 0x000000, 0.5)
       .setOrigin(1, 0).setStrokeStyle(2, 0x666666).setDepth(999);
     void scorePanel;
-    this.scoreBox = this.add.container(width - 200 - 12 + 12, 12 + 8).setDepth(1000);
+    this.scoreBox = this.add.container(width - SIDE - 170 + 12, boardBottom + 14).setDepth(1000);
     this.scoreBox.add(this.add.text(0, 0, "WINS", { fontSize: "14px", color: "#aaaaaa", fontStyle: "bold" }));
 
-    this.readyButton = this.add.text(width / 2, height / 2, "[ 準備 OK ]", {
-      fontSize: "32px", color: "#7ee787", backgroundColor: "#222",
+    // ロビー操作（盤面の下・中央。ロビー中のみ表示）
+    const lobbyY = boardBottom + 20;
+    this.readyButton = this.add.text(width / 2, lobbyY, "[ 準備 OK ]", {
+      fontSize: "28px", color: "#7ee787", backgroundColor: "#222",
       padding: { x: 16, y: 8 } as any, fontStyle: "bold",
-    }).setOrigin(0.5).setInteractive({ useHandCursor: true }).setDepth(1000);
+    }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true }).setDepth(1000);
     this.readyButton.on("pointerdown", () => {
       this.room.send("ready");
       this.readyButton.setText("準備済み...").disableInteractive();
     });
 
-    // CPU 追加 / 削除（ロビー中のみ表示）
-    this.addCpuButton = this.add.text(width / 2 - 90, height / 2 + 60, "[ ＋CPU ]", {
+    this.addCpuButton = this.add.text(width / 2 - 90, lobbyY + 54, "[ ＋CPU ]", {
       fontSize: "20px", color: "#7ec0e7", backgroundColor: "#222",
       padding: { x: 12, y: 6 } as any, fontStyle: "bold",
-    }).setOrigin(0.5).setInteractive({ useHandCursor: true }).setDepth(1000);
+    }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true }).setDepth(1000);
     this.addCpuButton.on("pointerdown", () => this.room.send("addBot"));
 
-    this.removeCpuButton = this.add.text(width / 2 + 90, height / 2 + 60, "[ －CPU ]", {
+    this.removeCpuButton = this.add.text(width / 2 + 90, lobbyY + 54, "[ －CPU ]", {
       fontSize: "20px", color: "#e7a07e", backgroundColor: "#222",
       padding: { x: 12, y: 6 } as any, fontStyle: "bold",
-    }).setOrigin(0.5).setInteractive({ useHandCursor: true }).setDepth(1000);
+    }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true }).setDepth(1000);
     this.removeCpuButton.on("pointerdown", () => this.room.send("removeBot"));
 
     // マップ選択（ロビー中のみ）。誰でも変更可（CPUボタンに倣う）。
-    this.mapLabel = this.add.text(width / 2, height / 2 + 104, "マップ:", {
+    this.mapLabel = this.add.text(width / 2, lobbyY + 100, "マップ:", {
       fontSize: "16px", color: "#cccccc",
-    }).setOrigin(0.5).setDepth(1000);
+    }).setOrigin(0.5, 0).setDepth(1000);
     const total = MAP_CHOICES.length;
     const bw = 96, gap = 8;
     const startX = width / 2 - (total * bw + (total - 1) * gap) / 2 + bw / 2;
     MAP_CHOICES.forEach((m, i) => {
-      const btn = this.add.text(startX + i * (bw + gap), height / 2 + 140, m.name, {
+      const btn = this.add.text(startX + i * (bw + gap), lobbyY + 128, m.name, {
         fontSize: "16px", color: "#cccccc", backgroundColor: "#222",
         padding: { x: 8, y: 6 } as any,
-      }).setOrigin(0.5).setInteractive({ useHandCursor: true }).setDepth(1000);
+      }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true }).setDepth(1000);
       btn.on("pointerdown", () => this.room.send("selectMap", { mapId: m.id }));
       this.mapButtons.push(btn);
     });
@@ -357,7 +349,7 @@ export class BombermanGameScene extends Phaser.Scene {
       this.hud.setText(`生存: ${aliveCount}/${state.players.size}`);
     } else if (state.phase === "lobby") {
       this.timerText.setText("");
-      this.hud.setText(`ロビー — 人数: ${state.players.size}/4`);
+      this.hud.setText("");
     } else {
       this.timerText.setText("END");
       this.hud.setText("");
@@ -709,7 +701,7 @@ export class BombermanGameScene extends Phaser.Scene {
     this.refreshMapButtons();
 
     if (phase === "lobby") {
-      this.phaseText.setText("LOBBY — 「準備 OK」or CPUと対戦");
+      this.phaseText.setText(""); // 盤面中央オーバーレイなのでロビーでは出さない（下のボタンで案内）
       this.readyButton.setVisible(true).setInteractive({ useHandCursor: true }).setText("[ 準備 OK ]");
       this.addCpuButton.setVisible(true);
       this.removeCpuButton.setVisible(true);
