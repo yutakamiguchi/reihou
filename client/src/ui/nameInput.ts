@@ -12,17 +12,9 @@ export function makeInput(
   el.placeholder = placeholder;
   el.maxLength = maxLen;
   el.value = defaultVal;
-  const canvas = scene.game.canvas;
-  const rect = canvas.getBoundingClientRect();
-  const scaleX = rect.width / scene.scale.width;
-  const scaleY = rect.height / scene.scale.height;
   Object.assign(el.style, {
     position: "absolute",
-    left: `${rect.left + x * scaleX}px`,
-    top: `${rect.top + y * scaleY}px`,
     transform: "translate(-50%, -50%)",
-    width: `${width * scaleX}px`,
-    fontSize: `${18 * scaleY}px`,
     padding: "8px 12px",
     border: "2px solid #888",
     borderRadius: "6px",
@@ -31,7 +23,38 @@ export function makeInput(
     outline: "none",
     textAlign: "center",
   } as CSSStyleDeclaration);
+
+  // canvas の現在位置・スケールに合わせて配置を更新する。
+  // 画面回転やウィンドウリサイズで canvas の矩形が変わるため、毎回 getBoundingClientRect で取り直す。
+  // これをしないと回転後に入力欄が画面外へずれて見えなくなる。
+  const reposition = () => {
+    const canvas = scene.game.canvas;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = rect.width / scene.scale.width;
+    const scaleY = rect.height / scene.scale.height;
+    el.style.left = `${rect.left + x * scaleX}px`;
+    el.style.top = `${rect.top + y * scaleY}px`;
+    el.style.width = `${width * scaleX}px`;
+    el.style.fontSize = `${18 * scaleY}px`;
+  };
+  reposition();
   document.body.appendChild(el);
+
+  // リサイズ/回転に追従。回転直後は寸法が未確定なことがあるので遅延でも再配置する。
+  const onResize = () => { reposition(); window.setTimeout(reposition, 250); };
+  scene.scale.on(Phaser.Scale.Events.RESIZE, reposition);
+  window.addEventListener("resize", onResize);
+  window.addEventListener("orientationchange", onResize);
+  const detach = () => {
+    scene.scale.off(Phaser.Scale.Events.RESIZE, reposition);
+    window.removeEventListener("resize", onResize);
+    window.removeEventListener("orientationchange", onResize);
+  };
+  scene.events.once(Phaser.Scenes.Events.SHUTDOWN, detach);
+  // 呼び出し側が el.remove() で破棄したときもリスナーを確実に外す。
+  const origRemove = el.remove.bind(el);
+  el.remove = () => { detach(); origRemove(); };
+
   return el;
 }
 
