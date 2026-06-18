@@ -6,6 +6,7 @@ import { BombermanLobbyScene } from "./scenes/bomberman/BombermanLobbyScene";
 import { BombermanGameScene } from "./scenes/bomberman/BombermanGameScene";
 import { MmoLobbyScene } from "./scenes/mmo/MmoLobbyScene";
 import { MmoGameScene } from "./scenes/mmo/MmoGameScene";
+import { BootScene } from "./scenes/auth/BootScene";
 import { LoginScene } from "./scenes/auth/LoginScene";
 
 // 横画面固定（ベストエフォート）。Android等の対応ブラウザでは効く。
@@ -29,6 +30,7 @@ new Phaser.Game({
   },
   backgroundColor: "#2a2f3a",
   scene: [
+    BootScene,
     HubScene,
     LoginScene,
     UnspottableLobbyScene, UnspottableGameScene,
