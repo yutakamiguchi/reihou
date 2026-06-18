@@ -3,7 +3,7 @@ import { joinPublicRoom, createPrivateRoom, joinRoomByCode } from "../net";
 import { enableSfx } from "../sfx";
 import { makeInput, makeButton } from "./nameInput";
 import { tryJoin } from "./connectFlow";
-import { loadPlayerName, savePlayerName } from "./playerName";
+import { loadPlayerName, persistPlayerName, resolveAccountName } from "./playerName";
 
 export interface LobbyConfig {
   title: string;          // 大見出し
@@ -36,13 +36,24 @@ export function buildLobby(scene: Phaser.Scene, cfg: LobbyConfig) {
   const nameInput = makeInput(scene, "名前", 16, loadPlayerName(), width / 2, 230);
   let codeInput: HTMLInputElement | null = null;
 
+  // 本登録アカウントなら、端末横断の表示名で入力欄を自動補完する。
+  // （初期値は localStorage で即時表示。アカウント名は非同期で取得して上書き）
+  // ユーザーが既に入力中なら邪魔しない。
+  let nameEdited = false;
+  nameInput.addEventListener("input", () => { nameEdited = true; });
+  void resolveAccountName().then((accName) => {
+    if (accName && !nameEdited && document.activeElement !== nameInput) {
+      nameInput.value = accName;
+    }
+  });
+
   const status = scene.add.text(width / 2, height - 130, "", {
     fontSize: "16px", color: "#ff8888",
   }).setOrigin(0.5);
 
   const getName = (): string => {
     const name = nameInput.value.trim() || "Player";
-    savePlayerName(name);
+    persistPlayerName(name); // localStorage 保存＋本登録なら表示名へも同期
     return name;
   };
   const cleanup = () => { nameInput.remove(); codeInput?.remove(); };
