@@ -162,7 +162,7 @@ export class BombermanGameScene extends Phaser.Scene {
     const zoom = Math.min((width - PAD * 2) / gridW, (height - PAD * 2) / gridH); // contain・一様（歪まない）
     this.cameras.main.setZoom(zoom);
     this.cameras.main.centerOn(gridW / 2, gridH / 2);
-    this.cameras.main.setBackgroundColor(0xffffff);
+    this.cameras.main.setBackgroundColor(0xd6d8dc); // 白だと眩しいので少し暗い薄グレー
     this.cameras.main.ignore(this.uiLayer);
     this.uiCam = this.cameras.add(0, 0, width, height);
     this.uiCam.ignore(this.worldLayer);
