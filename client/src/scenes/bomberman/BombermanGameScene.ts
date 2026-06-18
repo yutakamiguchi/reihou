@@ -310,6 +310,11 @@ export class BombermanGameScene extends Phaser.Scene {
 
   update(_t: number, dtMs: number) {
     const state: any = this.room.state;
+    // 毎フレーム向きを見て「横向きにしてください」を切替（イベント発火に依存せず確実）。
+    const portrait = window.innerHeight > window.innerWidth;
+    if (this.rotateOverlay && this.rotateOverlay.visible !== portrait) {
+      this.rotateOverlay.setVisible(portrait);
+    }
     this.updateBombColors(); // 爆弾を残り時間で赤くする
 
     // 押下状態から「先押し優先の単一方向」を求める。
