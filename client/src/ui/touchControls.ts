@@ -71,7 +71,9 @@ export function addTouchControls(scene: Phaser.Scene, opts: Opts): TouchControls
   opts.layer?.add([stickBase, stickThumb, actionBtn, actionTxt]);
 
   function inActionBtn(x: number, y: number): boolean {
-    return Phaser.Math.Distance.Between(x, y, btnX, btnY) <= btnR + 24;
+    // ボタンの実サイズ内だけをアクション扱いにする（余白を足さない）。
+    // こうすることでボタン周辺も含めて画面のほぼ全域を移動スティックに使える。
+    return Phaser.Math.Distance.Between(x, y, btnX, btnY) <= btnR;
   }
 
   function resetStick() {
