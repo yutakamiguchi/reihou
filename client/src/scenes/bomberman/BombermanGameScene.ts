@@ -155,10 +155,10 @@ export class BombermanGameScene extends Phaser.Scene {
     this.timerText = this.add.text(width - 170, 520, "", {
       fontSize: "40px", color: "#ffffff", fontStyle: "bold", stroke: "#000", strokeThickness: 4,
     }).setOrigin(0.5, 0).setDepth(1000);
-    // 生存数（左上・ホームボタンの下）
-    this.hud = this.add.text(16, 72, "", { fontSize: "20px", color: "#cccccc" }).setDepth(1000);
-    // ホームへ戻る（ハブ）ボタン（左上）
-    const homeBtn = this.add.text(16, 16, "← ホーム", {
+    // 生存数（左上）
+    this.hud = this.add.text(16, 16, "", { fontSize: "20px", color: "#cccccc" }).setDepth(1000);
+    // ホームへ戻る（ハブ）ボタン（左・少し下げて押しやすく）
+    const homeBtn = this.add.text(16, 110, "← ホーム", {
       fontSize: "22px", color: "#ffffff", backgroundColor: "#333",
       padding: { x: 14, y: 8 } as any, fontStyle: "bold",
     }).setOrigin(0, 0).setInteractive({ useHandCursor: true }).setDepth(1000);
