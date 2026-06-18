@@ -17,6 +17,9 @@ interface Opts {
   actionLabel?: string;   // ボタンに出す文字（例: "💣" / "攻撃"）
   deadZone?: number;      // 入力とみなす最小距離(px)
   maxRadius?: number;     // スティックの最大振れ幅(px)
+  // 2カメラ構成のシーンで、生成した操作UIをこのLayer(=UI専用カメラ側)に載せる。
+  // 省略時はシーン直下（単一カメラのシーン用）。
+  layer?: Phaser.GameObjects.Layer;
 }
 
 // タッチ端末判定。デスクトップ(マウス)では表示しない。
@@ -63,6 +66,9 @@ export function addTouchControls(scene: Phaser.Scene, opts: Opts): TouchControls
     fontSize: "48px", color: "#ffffff", fontStyle: "bold",
   }).setOrigin(0.5).setScrollFactor(0).setDepth(DEPTH + 1);
   let actionPointerId = -1;
+
+  // 2カメラ構成: 操作UIをUI専用Layerへ載せる（ワールドカメラのズーム対象から外す）。
+  opts.layer?.add([stickBase, stickThumb, actionBtn, actionTxt]);
 
   function inActionBtn(x: number, y: number): boolean {
     return Phaser.Math.Distance.Between(x, y, btnX, btnY) <= btnR + 24;
