@@ -37,6 +37,8 @@ const CARDS: GameCard[] = [
 ];
 
 export class HubScene extends Phaser.Scene {
+  private rotateOverlay?: Phaser.GameObjects.Container;
+
   constructor() { super("Hub"); }
 
   create() {
@@ -68,6 +70,47 @@ export class HubScene extends Phaser.Scene {
       const cx = startX + i * (cardW + gap);
       this.makeCard(cx, cy, cardW, cardH, card);
     });
+
+    // 縦持ち時の「横向きにしてください」オーバーレイ（最前面）。各ゲーム画面と同じ仕組み。
+    this.rotateOverlay = this.add.container(0, 0).setDepth(99999);
+    this.rotateOverlay.add([
+      this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.92),
+      this.add.text(width / 2, height / 2, "📱 横向きにしてください", {
+        fontSize: "44px", color: "#ffffff", fontStyle: "bold",
+      }).setOrigin(0.5),
+    ]);
+
+    // 向き判定。Phaser の RESIZE に加え、window の resize/orientationchange でも拾う
+    // （端末/ブラウザによって発火が異なるため取りこぼし防止）。表示制御のみ。
+    this.scale.on(Phaser.Scale.Events.RESIZE, this.applyOrientation, this);
+    window.addEventListener("resize", this.onWinOrient);
+    window.addEventListener("orientationchange", this.onWinOrient);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.scale.off(Phaser.Scale.Events.RESIZE, this.applyOrientation, this);
+      window.removeEventListener("resize", this.onWinOrient);
+      window.removeEventListener("orientationchange", this.onWinOrient);
+    });
+    this.applyOrientation();
+  }
+
+  // window の resize/orientationchange 用。回転直後は寸法が未確定なことがあるので遅延でも再判定。
+  private onWinOrient = () => {
+    this.applyOrientation();
+    window.setTimeout(() => this.applyOrientation(), 250);
+  };
+
+  // 縦持ちなら「横向きにしてください」を表示。端末（ウィンドウ）の実寸で判定する。
+  private applyOrientation() {
+    const portrait = window.innerHeight > window.innerWidth;
+    this.rotateOverlay?.setVisible(portrait);
+  }
+
+  update() {
+    // 毎フレーム向きを見て案内を切替（イベント発火に依存せず確実）。
+    const portrait = window.innerHeight > window.innerWidth;
+    if (this.rotateOverlay && this.rotateOverlay.visible !== portrait) {
+      this.rotateOverlay.setVisible(portrait);
+    }
   }
 
   private makeCard(cx: number, cy: number, w: number, h: number, card: GameCard) {
