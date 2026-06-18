@@ -194,7 +194,7 @@ export class BombermanGameScene extends Phaser.Scene {
 
     // ロビー操作（ロビー中のみ表示）: 画面下・中央バンド。タップしやすい大きさに。
     const lobbyCx = width / 2;
-    this.readyButton = this.add.text(lobbyCx, height - 150, "[ 準備 OK ]", {
+    this.readyButton = this.add.text(lobbyCx, height - 220, "[ 準備 OK ]", {
       fontSize: "30px", color: "#7ee787", backgroundColor: "#222",
       padding: { x: 22, y: 12 } as any, fontStyle: "bold",
     }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true }).setDepth(1000);
@@ -203,20 +203,20 @@ export class BombermanGameScene extends Phaser.Scene {
       this.readyButton.setText("準備済み...").disableInteractive();
     });
 
-    this.addCpuButton = this.add.text(lobbyCx - 130, height - 92, "[ ＋CPU ]", {
+    this.addCpuButton = this.add.text(lobbyCx - 130, height - 162, "[ ＋CPU ]", {
       fontSize: "22px", color: "#7ec0e7", backgroundColor: "#222",
       padding: { x: 16, y: 10 } as any, fontStyle: "bold",
     }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true }).setDepth(1000);
     this.addCpuButton.on("pointerdown", () => this.room.send("addBot"));
 
-    this.removeCpuButton = this.add.text(lobbyCx + 130, height - 92, "[ －CPU ]", {
+    this.removeCpuButton = this.add.text(lobbyCx + 130, height - 162, "[ －CPU ]", {
       fontSize: "22px", color: "#e7a07e", backgroundColor: "#222",
       padding: { x: 16, y: 10 } as any, fontStyle: "bold",
     }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true }).setDepth(1000);
     this.removeCpuButton.on("pointerdown", () => this.room.send("removeBot"));
 
     // マップ選択（ロビー中のみ）。誰でも変更可（CPUボタンに倣う）。
-    this.mapLabel = this.add.text(lobbyCx, height - 44, "マップ:", {
+    this.mapLabel = this.add.text(lobbyCx, height - 110, "マップ:", {
       fontSize: "18px", color: "#cccccc",
     }).setOrigin(0.5, 0).setDepth(1000);
     this.uiLayer.add([this.readyButton, this.addCpuButton, this.removeCpuButton, this.mapLabel]);
@@ -224,7 +224,7 @@ export class BombermanGameScene extends Phaser.Scene {
     const bw = 110, gap = 12;
     const startX = lobbyCx - (total * bw + (total - 1) * gap) / 2 + bw / 2;
     MAP_CHOICES.forEach((m, i) => {
-      const btn = this.add.text(startX + i * (bw + gap), height - 14, m.name, {
+      const btn = this.add.text(startX + i * (bw + gap), height - 80, m.name, {
         fontSize: "20px", color: "#cccccc", backgroundColor: "#222",
         padding: { x: 10, y: 8 } as any,
       }).setOrigin(0.5, 0).setInteractive({ useHandCursor: true }).setDepth(1000);
