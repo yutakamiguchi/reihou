@@ -12,12 +12,16 @@ export function makeInput(
   el.placeholder = placeholder;
   el.maxLength = maxLen;
   el.value = defaultVal;
+  // canvas と同じ親(#game)に入れ、canvas に対する相対位置で配置する。
+  // ビューポート/スクロール/セーフエリア/iOS の visual viewport などの基準ズレは
+  // 「canvas と el を同じ座標系で差分計算」することで打ち消され、横画面でもズレない。
+  const host = (scene.game.canvas.parentElement as HTMLElement) || document.body;
+  if (getComputedStyle(host).position === "static") host.style.position = "relative";
   Object.assign(el.style, {
-    // fixed = ビューポート基準。getBoundingClientRect もビューポート基準なので
-    // ページのスクロール量に左右されず canvas と正確に揃う（absolute だと
-    // スクロール分だけ上下にずれる＝横画面で「少し上による」原因になる）。
-    position: "fixed",
+    position: "absolute",
     transform: "translate(-50%, -50%)",
+    margin: "0",
+    boxSizing: "border-box",
     padding: "8px 12px",
     border: "2px solid #888",
     borderRadius: "6px",
@@ -28,20 +32,23 @@ export function makeInput(
   } as CSSStyleDeclaration);
 
   // canvas の現在位置・スケールに合わせて配置を更新する。
-  // 画面回転やウィンドウリサイズで canvas の矩形が変わるため、毎回 getBoundingClientRect で取り直す。
-  // これをしないと回転後に入力欄が画面外へずれて見えなくなる。
+  // 画面回転やウィンドウリサイズで canvas の矩形が変わるため毎回取り直す。
   const reposition = () => {
     const canvas = scene.game.canvas;
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = rect.width / scene.scale.width;
-    const scaleY = rect.height / scene.scale.height;
-    el.style.left = `${rect.left + x * scaleX}px`;
-    el.style.top = `${rect.top + y * scaleY}px`;
+    const cRect = canvas.getBoundingClientRect();
+    const hRect = host.getBoundingClientRect();
+    const scaleX = cRect.width / scene.scale.width;
+    const scaleY = cRect.height / scene.scale.height;
+    // host 内ローカル座標 = canvas の host に対する相対位置（同一座標系の差分）
+    const localLeft = cRect.left - hRect.left;
+    const localTop = cRect.top - hRect.top;
+    el.style.left = `${localLeft + x * scaleX}px`;
+    el.style.top = `${localTop + y * scaleY}px`;
     el.style.width = `${width * scaleX}px`;
     el.style.fontSize = `${18 * scaleY}px`;
   };
+  host.appendChild(el);
   reposition();
-  document.body.appendChild(el);
 
   // リサイズ/回転に追従。回転直後は寸法が未確定なことがあるので遅延でも再配置する。
   const onResize = () => { reposition(); window.setTimeout(reposition, 250); };
