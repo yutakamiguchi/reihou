@@ -288,11 +288,11 @@ export class BombermanGameScene extends Phaser.Scene {
     this.onPhaseChanged();
   }
 
-  // 縦持ちなら「横向きにしてください」を表示。FIT下では scale.width/height が固定のため
-  // 実CSSサイズ(displaySize)で向きを判定する。回転時に RESIZE から呼ばれる。
+  // 縦持ちなら「横向きにしてください」を表示。
+  // キャンバスの displaySize は FIT で 1600x900 比に固定され縦横が入れ替わらないため使えない。
+  // 端末（ウィンドウ）の実寸で判定する。回転時に RESIZE から呼ばれる。
   private applyOrientation() {
-    const d = this.scale.displaySize;
-    const portrait = d.height > d.width;
+    const portrait = window.innerHeight > window.innerWidth;
     this.rotateOverlay?.setVisible(portrait);
   }
 
