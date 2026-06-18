@@ -56,6 +56,16 @@ export class UnspottableGameScene extends Phaser.Scene {
   init(data: { room: Room }) {
     this.room = data.room;
     this.myId = this.room.sessionId;
+    // Phaser はシーンインスタンスを使い回す。前回ゲームの破棄済みオブジェクトへの
+    // 参照が Map/配列に残ると、再入場時にそれを触って例外→描画ループが停止し固まる。
+    // 再入場ごとに初期化する。
+    this.views.clear();
+    this.graveViews.clear();
+    this.scoreLines = [];
+    this.obstacleRects = [];
+    this.lastInputSent = { up: false, down: false, left: false, right: false };
+    this.lastMyScore = 0;
+    this.predictReady = false;
   }
 
   preload() {
