@@ -22,7 +22,10 @@ new Phaser.Game({
   height: 900,
   scale: {
     mode: Phaser.Scale.FIT,
-    autoCenter: Phaser.Scale.CENTER_BOTH,
+    // センタリングは index.html の #game(flex) 側で行う。
+    // ここで CENTER_BOTH にすると canvas に margin が付き、flex の中央寄せと
+    // 二重にずれて画面端（特に上）が見切れるため NO_CENTER にする。
+    autoCenter: Phaser.Scale.NO_CENTER,
   },
   backgroundColor: "#2a2f3a",
   scene: [

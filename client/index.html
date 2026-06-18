@@ -22,8 +22,11 @@
     body {
       box-sizing: border-box;
       height: 100dvh;
-      /* ノッチ/ホームインジケータ等のセーフエリアぶんだけ内側に寄せ、キャンバス全体を安全領域に収める */
-      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+      /* ノッチ/ホームインジケータ等のセーフエリアぶんだけ内側に寄せ、キャンバス全体を安全領域に収める。
+         セーフエリアが0を返す端末でも端に貼り付かないよう最小8pxを確保する。 */
+      padding:
+        max(env(safe-area-inset-top), 8px) max(env(safe-area-inset-right), 8px)
+        max(env(safe-area-inset-bottom), 8px) max(env(safe-area-inset-left), 8px);
     }
     #game { display: flex; justify-content: center; align-items: center; width: 100%; height: 100%; }
   </style>

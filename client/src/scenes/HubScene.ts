@@ -164,8 +164,11 @@ export class HubScene extends Phaser.Scene {
 
   // 右上のアカウント状態表示。クリックでログイン/アカウント管理へ。
   private makeAccountStatus(width: number) {
-    const label = this.add.text(width - 24, 30, "…", {
+    // 画面最上部はノッチ/システムUIで隠れたり押しにくいので少し下げ、
+    // 背景パディングでタップ範囲を広げる。
+    const label = this.add.text(width - 20, 46, "…", {
       fontSize: "16px", color: "#cccccc", align: "right",
+      backgroundColor: "#1a1d24", padding: { x: 10, y: 8 } as any,
     }).setOrigin(1, 0).setInteractive({ useHandCursor: true });
 
     label.on("pointerover", () => label.setColor("#ffffff"));
