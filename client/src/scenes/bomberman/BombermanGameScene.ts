@@ -139,9 +139,9 @@ export class BombermanGameScene extends Phaser.Scene {
     this.uiLayer = this.add.layer();
 
     // --- カメラ: main=盤面をズーム表示 / uiCam=UIを等倍 ---
-    // 画面端いっぱいだとノッチ/ホームインジケータ/角の丸みで盤面が見切れるため、
-    // 周囲にセーフエリア用の余白(PAD)を取って必ず全体が収まるようにする。
-    const PAD = 64;
+    // セーフエリア自体は index.html の env(safe-area-inset-*) でキャンバスごと内側に
+    // 寄せて回避済み。ここは見栄え用の少しの余白だけ。
+    const PAD = 24;
     const zoom = Math.min((width - PAD * 2) / gridW, (height - PAD * 2) / gridH); // contain・一様（歪まない）
     this.cameras.main.setZoom(zoom);
     this.cameras.main.centerOn(gridW / 2, gridH / 2);

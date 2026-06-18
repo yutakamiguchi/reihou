@@ -15,11 +15,17 @@
 
   <title>Unspottable Web</title>
   <style>
-    html, body { margin: 0; padding: 0; background: #2a2f3a; color: #eee; font-family: system-ui, sans-serif; overflow: hidden;
+    html, body { margin: 0; padding: 0; background: #2a2f3a; color: #eee; font-family: system-ui, sans-serif; overflow: hidden; height: 100%;
       /* スマホでのスクロール/長押し選択/タップ拡大を抑止し、ゲーム操作に集中させる */
       touch-action: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
       overscroll-behavior: none; }
-    #game { display: flex; justify-content: center; align-items: center; width: 100vw; height: 100vh; height: 100dvh; }
+    body {
+      box-sizing: border-box;
+      height: 100dvh;
+      /* ノッチ/ホームインジケータ等のセーフエリアぶんだけ内側に寄せ、キャンバス全体を安全領域に収める */
+      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    }
+    #game { display: flex; justify-content: center; align-items: center; width: 100%; height: 100%; }
   </style>
 </head>
 <body>
