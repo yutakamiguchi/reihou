@@ -12,11 +12,6 @@ export function makeInput(
   el.placeholder = placeholder;
   el.maxLength = maxLen;
   el.value = defaultVal;
-  // canvas と同じ親(#game)に入れ、canvas に対する相対位置で配置する。
-  // ビューポート/スクロール/セーフエリア/iOS の visual viewport などの基準ズレは
-  // 「canvas と el を同じ座標系で差分計算」することで打ち消され、横画面でもズレない。
-  const host = (scene.game.canvas.parentElement as HTMLElement) || document.body;
-  if (getComputedStyle(host).position === "static") host.style.position = "relative";
   Object.assign(el.style, {
     position: "absolute",
     transform: "translate(-50%, -50%)",
@@ -32,22 +27,20 @@ export function makeInput(
   } as CSSStyleDeclaration);
 
   // canvas の現在位置・スケールに合わせて配置を更新する。
-  // 画面回転やウィンドウリサイズで canvas の矩形が変わるため毎回取り直す。
+  // - getBoundingClientRect はビューポート基準、position:absolute はドキュメント原点
+  //   (スクロール込み)基準。両者の差＝スクロール量を足さないと、その分だけ上にずれる
+  //   （横画面で「ちょっと上による」原因）。scrollX/Y を加えて一致させる。
+  // - 画面回転/リサイズで canvas 矩形が変わるため毎回取り直す。
   const reposition = () => {
-    const canvas = scene.game.canvas;
-    const cRect = canvas.getBoundingClientRect();
-    const hRect = host.getBoundingClientRect();
-    const scaleX = cRect.width / scene.scale.width;
-    const scaleY = cRect.height / scene.scale.height;
-    // host 内ローカル座標 = canvas の host に対する相対位置（同一座標系の差分）
-    const localLeft = cRect.left - hRect.left;
-    const localTop = cRect.top - hRect.top;
-    el.style.left = `${localLeft + x * scaleX}px`;
-    el.style.top = `${localTop + y * scaleY}px`;
+    const rect = scene.game.canvas.getBoundingClientRect();
+    const scaleX = rect.width / scene.scale.width;
+    const scaleY = rect.height / scene.scale.height;
+    el.style.left = `${rect.left + window.scrollX + x * scaleX}px`;
+    el.style.top = `${rect.top + window.scrollY + y * scaleY}px`;
     el.style.width = `${width * scaleX}px`;
     el.style.fontSize = `${18 * scaleY}px`;
   };
-  host.appendChild(el);
+  document.body.appendChild(el);
   reposition();
 
   // リサイズ/回転に追従。回転直後は寸法が未確定なことがあるので遅延でも再配置する。
