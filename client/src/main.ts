@@ -8,6 +8,12 @@ import { MmoLobbyScene } from "./scenes/mmo/MmoLobbyScene";
 import { MmoGameScene } from "./scenes/mmo/MmoGameScene";
 import { LoginScene } from "./scenes/auth/LoginScene";
 
+// 横画面固定（ベストエフォート）。Android等の対応ブラウザでは効く。
+// iOS Safari は未対応のため reject されるが、各シーンの「横にして」案内で補う。
+try {
+  (screen.orientation as any)?.lock?.("landscape").catch(() => {});
+} catch { /* 未対応環境は無視 */ }
+
 new Phaser.Game({
   type: Phaser.AUTO,
   parent: "game",
