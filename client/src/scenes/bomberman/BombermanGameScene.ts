@@ -253,11 +253,17 @@ export class BombermanGameScene extends Phaser.Scene {
     });
     this.input.keyboard!.on("keydown-ESC", () => this.room.leave());
 
-    // 向き判定（FIT下では scale.width/height は1600/900固定なので実CSSサイズで判定）。
-    // 回転で表示/非表示を切替（restart不要・表示制御のみ）。
+    // 向き判定。Phaser の RESIZE に加え、window の resize/orientationchange でも拾う
+    // （端末/ブラウザによって発火が異なるため取りこぼし防止）。回転直後は寸法未確定の
+    // ことがあるので遅延でも再判定する。表示制御のみ（restart不要）。
     this.scale.on(Phaser.Scale.Events.RESIZE, this.applyOrientation, this);
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () =>
-      this.scale.off(Phaser.Scale.Events.RESIZE, this.applyOrientation, this));
+    window.addEventListener("resize", this.onWinOrient);
+    window.addEventListener("orientationchange", this.onWinOrient);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.scale.off(Phaser.Scale.Events.RESIZE, this.applyOrientation, this);
+      window.removeEventListener("resize", this.onWinOrient);
+      window.removeEventListener("orientationchange", this.onWinOrient);
+    });
     this.applyOrientation();
 
     const $ = getStateCallbacks(this.room);
@@ -288,9 +294,15 @@ export class BombermanGameScene extends Phaser.Scene {
     this.onPhaseChanged();
   }
 
+  // window の resize/orientationchange 用。回転直後は寸法が未確定なことがあるので遅延でも再判定。
+  private onWinOrient = () => {
+    this.applyOrientation();
+    window.setTimeout(() => this.applyOrientation(), 250);
+  };
+
   // 縦持ちなら「横向きにしてください」を表示。
   // キャンバスの displaySize は FIT で 1600x900 比に固定され縦横が入れ替わらないため使えない。
-  // 端末（ウィンドウ）の実寸で判定する。回転時に RESIZE から呼ばれる。
+  // 端末（ウィンドウ）の実寸で判定する。
   private applyOrientation() {
     const portrait = window.innerHeight > window.innerWidth;
     this.rotateOverlay?.setVisible(portrait);
