@@ -13,7 +13,10 @@ export function makeInput(
   el.maxLength = maxLen;
   el.value = defaultVal;
   Object.assign(el.style, {
-    position: "absolute",
+    // fixed = ビューポート基準。getBoundingClientRect もビューポート基準なので
+    // ページのスクロール量に左右されず canvas と正確に揃う（absolute だと
+    // スクロール分だけ上下にずれる＝横画面で「少し上による」原因になる）。
+    position: "fixed",
     transform: "translate(-50%, -50%)",
     padding: "8px 12px",
     border: "2px solid #888",
