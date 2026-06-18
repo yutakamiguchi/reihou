@@ -90,6 +90,7 @@ export class BombermanGameScene extends Phaser.Scene {
   // 押されている方向キーを「押した順」で保持。先に押した方向を優先する。
   private dirOrder: Array<"up" | "down" | "left" | "right"> = [];
   private touch!: TouchControls;  // スマホ向け画面上タッチ操作
+  private goingHome = false;      // ホームボタンで退室したか（true なら Hub へ）
 
   // 自キャラのローカル予測。サーバー初回位置で初期化する。
   private predict: PredictState | null = null;
@@ -147,12 +148,19 @@ export class BombermanGameScene extends Phaser.Scene {
     this.uiCam.ignore(this.worldLayer);
 
     // ===== HUD / 操作UI（全て uiLayer・画面端アンカー・1600x900）=====
-    // タイマー（上中央）
-    this.timerText = this.add.text(width / 2, 16, "", {
-      fontSize: "36px", color: "#ffffff", fontStyle: "bold", stroke: "#000", strokeThickness: 4,
+    // タイマー（💣ボタンの上＝右下。上端はノッチ等で隠れやすいので避ける）
+    this.timerText = this.add.text(width - 170, 520, "", {
+      fontSize: "40px", color: "#ffffff", fontStyle: "bold", stroke: "#000", strokeThickness: 4,
     }).setOrigin(0.5, 0).setDepth(1000);
-    // 生存数（左上）
-    this.hud = this.add.text(16, 16, "", { fontSize: "20px", color: "#cccccc" }).setDepth(1000);
+    // 生存数（左上・ホームボタンの下）
+    this.hud = this.add.text(16, 72, "", { fontSize: "20px", color: "#cccccc" }).setDepth(1000);
+    // ホームへ戻る（ハブ）ボタン（左上）
+    const homeBtn = this.add.text(16, 16, "← ホーム", {
+      fontSize: "22px", color: "#ffffff", backgroundColor: "#333",
+      padding: { x: 14, y: 8 } as any, fontStyle: "bold",
+    }).setOrigin(0, 0).setInteractive({ useHandCursor: true }).setDepth(1000);
+    homeBtn.on("pointerdown", () => { this.goingHome = true; this.room.leave(); });
+    this.uiLayer.add(homeBtn);
     // 大きな状態表示（START!/勝敗）は画面中央オーバーレイ
     this.phaseText = this.add.text(width / 2, height / 2, "", {
       fontSize: "56px", color: "#ffe066", stroke: "#000", strokeThickness: 6,
@@ -172,12 +180,12 @@ export class BombermanGameScene extends Phaser.Scene {
       this.uiLayer.add(codeBox);
     }
 
-    // WINS パネル（右上角）
-    const winW = 170;
-    const winX = width - 16 - winW;
-    const winPanel = this.add.rectangle(winX, 16, winW, 150, 0x000000, 0.5)
-      .setOrigin(0, 0).setStrokeStyle(2, 0x666666).setDepth(999);
-    this.scoreBox = this.add.container(winX + 12, 24).setDepth(1000);
+    // WINS（プレイヤー名）パネル: タイマーの上＝右下。ノッチ等で隠れない位置へ。
+    const winW = 200;
+    const winCx = width - 170;        // 💣ボタンと同じ x 中心
+    const winPanel = this.add.rectangle(winCx, 360, winW, 150, 0x000000, 0.5)
+      .setOrigin(0.5, 0).setStrokeStyle(2, 0x666666).setDepth(999);
+    this.scoreBox = this.add.container(winCx - winW / 2 + 12, 368).setDepth(1000);
     this.scoreBox.add(this.add.text(0, 0, "WINS", { fontSize: "16px", color: "#aaaaaa", fontStyle: "bold" }));
     this.uiLayer.add([winPanel, this.scoreBox]);
 
@@ -272,7 +280,7 @@ export class BombermanGameScene extends Phaser.Scene {
     // 選択マップが変わったらボタンのハイライト更新
     $(state).listen("mapId", () => this.refreshMapButtons());
 
-    this.room.onLeave(() => this.scene.start("BombermanLobby"));
+    this.room.onLeave(() => this.scene.start(this.goingHome ? "Hub" : "BombermanLobby"));
 
     this.onPhaseChanged();
   }
