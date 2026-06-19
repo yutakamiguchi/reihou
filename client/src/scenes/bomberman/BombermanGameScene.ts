@@ -475,26 +475,23 @@ export class BombermanGameScene extends Phaser.Scene {
     const ts = this.ts;
     const hasInput = cmd.up || cmd.down || cmd.left || cmd.right;
 
-    // 移動中でなく、入力があれば次の目標セルを決める
-    if (!pr.move && hasInput) {
-      let dc = 0, dr = 0, dir = pr.dir;
-      if (cmd.up) { dr = -1; dir = 3; }
-      else if (cmd.down) { dr = 1; dir = 0; }
-      else if (cmd.left) { dc = -1; dir = 1; }
-      else if (cmd.right) { dc = 1; dir = 2; }
-      if (dc !== 0 || dr !== 0) {
+    // 移動中でなく次の目標セルを決める（サーバー handlePlayer と同一ロジック）。
+    // ベルト上なら強制搬送が入力より優先。前方が塞がるときだけ入力にフォールバック。
+    if (!pr.move) {
+      let dc = 0, dr = 0, dir = pr.dir, decided = false;
+      const b = this.beltDir(this.tileAt(pr.col, pr.row));
+      if (b && this.isPassable(pr.col + b.dc, pr.row + b.dr)) {
+        dc = b.dc; dr = b.dr; dir = b.dir; decided = true;
+      } else if (hasInput) {
+        if (cmd.up) { dr = -1; dir = 3; }
+        else if (cmd.down) { dr = 1; dir = 0; }
+        else if (cmd.left) { dc = -1; dir = 1; }
+        else if (cmd.right) { dc = 1; dir = 2; }
+        if (dc !== 0 || dr !== 0) decided = true;
+      }
+      if (decided) {
         pr.dir = dir;
         const ncol = pr.col + dc, nrow = pr.row + dr;
-        if (this.isPassable(ncol, nrow)) pr.move = { targetCol: ncol, targetRow: nrow };
-      }
-    }
-
-    // ベルト（サーバーと同一）：入力が無くベルト上なら矢印方向へ1マス
-    if (!pr.move && !hasInput) {
-      const b = this.beltDir(this.tileAt(pr.col, pr.row));
-      if (b) {
-        pr.dir = b.dir;
-        const ncol = pr.col + b.dc, nrow = pr.row + b.dr;
         if (this.isPassable(ncol, nrow)) pr.move = { targetCol: ncol, targetRow: nrow };
       }
     }

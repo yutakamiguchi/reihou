@@ -3,7 +3,7 @@ import {
   BombermanState, BPlayer, Bomb, Flame, Item, SoftBlock,
 } from "../../schema/BombermanState";
 import { canStartRound } from "../phase";
-import { getMapById, pickRandomMap, type BombermanMap } from "./maps";
+import { getMapById, pickRandomMap, generateTiles, MAP_COLS, MAP_ROWS, type BombermanMap } from "./maps";
 
 const TICK_RATE = 30;
 const NUM_COLORS = 8;
@@ -50,7 +50,7 @@ export class BombermanRoom extends Room<BombermanState> {
     this.setState(new BombermanState());
     this.state.code = (options?.code || "").slice(0, 8);
     if (this.state.code !== "") this.setPrivate(true);
-    this.applyMap(getMapById("classic")!); // 既定マップを反映（tiles/cols/rows/warpPairs 構築）
+    this.applyKind(getMapById("classic")!); // 既定マップを反映（tiles/cols/rows/warpPairs 構築）
     this.generateMap();
 
     this.onMessage("input", (client, message: Partial<BInput>) => {
@@ -81,8 +81,9 @@ export class BombermanRoom extends Room<BombermanState> {
       const id = message?.mapId || "";
       if (id !== "random" && !getMapById(id)) return; // 不正IDは無視
       this.state.mapId = id;
-      // random はプレビュー不可なので tiles は据え置き。具象マップならプレビュー反映。
-      if (id !== "random") this.applyMap(getMapById(id)!);
+      // random はプレビュー不可なので tiles は据え置き。具象マップなら配置サンプルをプレビュー。
+      // （実際の配置はラウンド開始時に再ランダムされる）
+      if (id !== "random") this.applyKind(getMapById(id)!);
     });
 
     this.onMessage("addBot", () => {
@@ -157,13 +158,13 @@ export class BombermanRoom extends Room<BombermanState> {
 
   // --- マップ生成 ---
 
-  // プリセットマップの tiles/cols/rows を state に反映＋ワープ対を構築する。
+  // マップ定義からベルト/ワープをランダム生成して tiles/cols/rows を state に反映＋ワープ対を構築。
   // mapId（選択状態。"random"含む）はここでは触らない（呼び出し側が管理）。
-  private applyMap(map: BombermanMap) {
-    this.state.cols = map.cols;
-    this.state.rows = map.rows;
-    this.state.tiles = map.tiles;
-    this.buildWarpPairs(map);
+  private applyKind(def: BombermanMap) {
+    this.state.cols = MAP_COLS;
+    this.state.rows = MAP_ROWS;
+    this.state.tiles = generateTiles(def);
+    this.buildWarpPairs();
   }
 
   // 指定セルの tiles 文字（'#'壁 / '.'床 / '^v<>'ベルト / '0-9'ワープ）。範囲外は壁扱い。
@@ -204,12 +205,13 @@ export class BombermanRoom extends Room<BombermanState> {
   }
 
   // tiles 中の数字（同じ数字が2個で1対）からワープ対応表を作る。
-  private buildWarpPairs(map: BombermanMap) {
+  private buildWarpPairs() {
     this.warpPairs.clear();
+    const { cols, rows, tiles } = this.state;
     const byChar = new Map<string, Array<{ col: number; row: number }>>();
-    for (let row = 0; row < map.rows; row++) {
-      for (let col = 0; col < map.cols; col++) {
-        const ch = map.tiles.charAt(row * map.cols + col);
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const ch = tiles.charAt(row * cols + col);
         if (ch >= "0" && ch <= "9") {
           if (!byChar.has(ch)) byChar.set(ch, []);
           byChar.get(ch)!.push({ col, row });
@@ -296,7 +298,7 @@ export class BombermanRoom extends Room<BombermanState> {
     const actual = this.state.mapId === "random"
       ? pickRandomMap()
       : (getMapById(this.state.mapId) ?? getMapById("classic")!);
-    this.applyMap(actual);
+    this.applyKind(actual); // ベルト/ワープをラウンドごとに再ランダム
     this.generateMap();
 
     let i = 0;
@@ -423,29 +425,26 @@ export class BombermanRoom extends Room<BombermanState> {
     // この固定ステップ時点で反映済みの入力seqを記録（reconcile基準。bot は seq=0）
     if (inp) p.lastSeq = inp.seq;
 
-    // 移動中でなく、入力があれば次の目標セルを決める
-    if (!mv && hasInput && inp) {
-      let dc = 0, dr = 0, dir = p.dir;
-      if (inp.up) { dr = -1; dir = 3; }
-      else if (inp.down) { dr = 1; dir = 0; }
-      else if (inp.left) { dc = -1; dir = 1; }
-      else if (inp.right) { dc = 1; dir = 2; }
-      if (dc !== 0 || dr !== 0) {
+    // 移動中でなく次の目標セルを決める。ベルト上なら強制搬送が入力より優先。
+    if (!mv) {
+      let dc = 0, dr = 0, dir = p.dir, decided = false;
+
+      // ベルト：乗っていて進行方向が通れるなら強制で運ぶ（入力無視）。
+      // 前方が塞がっているときだけ入力にフォールバック（詰み防止）。
+      const b = this.beltDir(this.tileAt(p.col, p.row));
+      if (b && this.isPassable(p.col + b.dc, p.row + b.dr)) {
+        dc = b.dc; dr = b.dr; dir = b.dir; decided = true;
+      } else if (hasInput && inp) {
+        if (inp.up) { dr = -1; dir = 3; }
+        else if (inp.down) { dr = 1; dir = 0; }
+        else if (inp.left) { dc = -1; dir = 1; }
+        else if (inp.right) { dc = 1; dir = 2; }
+        if (dc !== 0 || dr !== 0) decided = true;
+      }
+
+      if (decided) {
         const ncol = p.col + dc, nrow = p.row + dr;
         p.dir = dir;
-        if (this.isPassable(ncol, nrow)) {
-          mv = { targetCol: ncol, targetRow: nrow };
-          this.moves.set(sid, mv);
-        }
-      }
-    }
-
-    // ベルト：入力が無く、ベルト上にいるなら矢印方向へ1マス（連続コンベア）。入力時はプレイヤー優先。
-    if (!mv && !hasInput) {
-      const b = this.beltDir(this.tileAt(p.col, p.row));
-      if (b) {
-        p.dir = b.dir;
-        const ncol = p.col + b.dc, nrow = p.row + b.dr;
         if (this.isPassable(ncol, nrow)) {
           mv = { targetCol: ncol, targetRow: nrow };
           this.moves.set(sid, mv);
