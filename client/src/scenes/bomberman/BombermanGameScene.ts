@@ -754,7 +754,9 @@ export class BombermanGameScene extends Phaser.Scene {
 
   private addItem(id: string, it: any) {
     const c = this.cellCenter(it.col, it.row);
-    const cont = this.add.container(c.x, c.y).setDepth(c.y - 500);
+    // depth は床(-1)より上、プレイヤー(depth=自分のy)より下にする。
+    // 以前は c.y-500 で、上半分のセルだと負になり床の裏に隠れて描画されなかった。
+    const cont = this.add.container(c.x, c.y).setDepth(c.y - 1);
     const color = it.kind === "bomb" ? 0x333333 : it.kind === "fire" ? 0xff5533 : 0x44aaff;
     const box = this.add.rectangle(0, 0, this.ts * 0.6, this.ts * 0.6, 0xffffff, 0.95).setStrokeStyle(2, color);
     const icon = this.add.circle(0, 0, this.ts * 0.16, color);
