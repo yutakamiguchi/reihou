@@ -245,13 +245,31 @@ export class BombermanRoom extends Room<BombermanState> {
     return corners.some(([c, r]) => c === col && r === row);
   }
 
+  // ベルトが指す先の床セル（＝ベルトの出口）。ここをソフトブロックで塞ぐと
+  // 端で前方が塞がり、垂直方向が壁だと逃げられず詰むため、生成対象から除外する。
+  private beltExitCells(): Set<string> {
+    const s = new Set<string>();
+    const { cols, rows } = this.state;
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const b = this.beltDir(this.tileAt(col, row));
+        if (!b) continue;
+        const ec = col + b.dc, er = row + b.dr;
+        if (this.tileAt(ec, er) === ".") s.add(cellKey(ec, er));
+      }
+    }
+    return s;
+  }
+
   private generateMap() {
     this.state.softBlocks.clear();
     const { cols, rows } = this.state;
+    const beltExits = this.beltExitCells();
     for (let row = 1; row < rows - 1; row++) {
       for (let col = 1; col < cols - 1; col++) {
         if (this.tileAt(col, row) !== ".") continue; // 壁・ベルト・ワープには置かない
         if (this.isSpawnSafe(col, row)) continue;
+        if (beltExits.has(cellKey(col, row))) continue; // ベルト出口は塞がない（詰み防止）
         if (Math.random() < SOFT_BLOCK_RATIO) {
           const sb = new SoftBlock();
           sb.col = col; sb.row = row;
