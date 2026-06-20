@@ -245,8 +245,9 @@ export class BombermanRoom extends Room<BombermanState> {
     return corners.some(([c, r]) => c === col && r === row);
   }
 
-  // ベルトが指す先の床セル（＝ベルトの出口）。ここをソフトブロックで塞ぐと
-  // 端で前方が塞がり、垂直方向が壁だと逃げられず詰むため、生成対象から除外する。
+  // ベルトが指す先の床セル（＝出口とその先の2マス）。ここをソフトブロックで塞ぐと
+  // 出口が袋小路になり、戻る→また押し戻されるで詰む。出口側に開けた床を確保するため
+  // 進行方向2マス分を生成対象から除外する（盤面端まではその範囲のみ）。
   private beltExitCells(): Set<string> {
     const s = new Set<string>();
     const { cols, rows } = this.state;
@@ -254,8 +255,10 @@ export class BombermanRoom extends Room<BombermanState> {
       for (let col = 0; col < cols; col++) {
         const b = this.beltDir(this.tileAt(col, row));
         if (!b) continue;
-        const ec = col + b.dc, er = row + b.dr;
-        if (this.tileAt(ec, er) === ".") s.add(cellKey(ec, er));
+        for (let k = 1; k <= 2; k++) {
+          const ec = col + b.dc * k, er = row + b.dr * k;
+          if (this.tileAt(ec, er) === ".") s.add(cellKey(ec, er));
+        }
       }
     }
     return s;

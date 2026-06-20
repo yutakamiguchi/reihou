@@ -73,15 +73,17 @@ const randInt = (min: number, max: number) => min + Math.floor(Math.random() * (
 function tryPlaceBelt(g: string[][]): boolean {
   const horizontal = Math.random() < 0.5;
   const len = randInt(3, 6);
+  // 本体 [start, start+len-1] に加え、両端の先2マス(start-2..start+len+1)も床で空けておく。
+  // こうすると出口が必ず「開けた床」につながり、袋小路で詰まない（戻り先＝ベルトしか
+  // 無い状況を作らない）。生成対象から外す保護は beltExitCells が行う。
   if (horizontal) {
     // 内側の奇数行のみ（スポーン行 row1 / row ROWS-2 は避ける）
     const rowCandidates: number[] = [];
     for (let r = 3; r <= MAP_ROWS - 4; r += 2) rowCandidates.push(r);
     const row = rowCandidates[randInt(0, rowCandidates.length - 1)];
-    // 本体 [start, start+len-1]、両端の先 start-1 / start+len も内側に収める
-    const start = randInt(2, MAP_COLS - 3 - len + 1);
-    if (start < 2 || start + len > MAP_COLS - 2) return false;
-    for (let c = start - 1; c <= start + len; c++) {
+    const start = randInt(3, MAP_COLS - 3 - len);
+    if (start - 2 < 1 || start + len + 1 > MAP_COLS - 2) return false;
+    for (let c = start - 2; c <= start + len + 1; c++) {
       if (g[row][c] !== "." || isSpawnSafe(c, row)) return false;
     }
     const ch = Math.random() < 0.5 ? ">" : "<";
@@ -91,9 +93,9 @@ function tryPlaceBelt(g: string[][]): boolean {
     const colCandidates: number[] = [];
     for (let c = 3; c <= MAP_COLS - 4; c += 2) colCandidates.push(c);
     const col = colCandidates[randInt(0, colCandidates.length - 1)];
-    const start = randInt(2, MAP_ROWS - 3 - len + 1);
-    if (start < 2 || start + len > MAP_ROWS - 2) return false;
-    for (let r = start - 1; r <= start + len; r++) {
+    const start = randInt(3, MAP_ROWS - 3 - len);
+    if (start - 2 < 1 || start + len + 1 > MAP_ROWS - 2) return false;
+    for (let r = start - 2; r <= start + len + 1; r++) {
       if (g[r][col] !== "." || isSpawnSafe(col, r)) return false;
     }
     const ch = Math.random() < 0.5 ? "v" : "^";
