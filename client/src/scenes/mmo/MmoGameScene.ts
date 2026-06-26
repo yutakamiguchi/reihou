@@ -124,7 +124,7 @@ export class MmoGameScene extends Phaser.Scene {
   private classLayer?: Phaser.GameObjects.Container; // 職業クラス選択モーダル（初回・強制）
   private menuLayer?: Phaser.GameObjects.Container;  // タッチ用 ☰ メニュー
   private touch!: TouchControls;                     // タッチ操作（スティック＋攻撃ボタン）
-  private interactBtn?: Phaser.GameObjects.Container; // タッチ用 近接✋ボタン（near*時のみ表示）
+  private interactEls: Phaser.GameObjects.GameObject[] = []; // タッチ用 近接✋ボタン要素（near*時のみ表示）
   private statusTab: "status" | "items" | "equip" | "other" = "status";
   private statusContent?: Phaser.GameObjects.Container;
   private statusTabs: Array<{ key: string; bg: Phaser.GameObjects.Rectangle; label: Phaser.GameObjects.Text }> = [];
@@ -1212,15 +1212,20 @@ export class MmoGameScene extends Phaser.Scene {
     mbBg.on("pointerdown", () => { if (this.menuLayer) this.closeTouchMenu(); else this.openTouchMenu(); });
     this.uiLayer.add([mbBg, mbTxt]);
 
-    // 近接✋ボタン（右下・攻撃ボタンの上。near*時のみ表示）
-    const ibR = 88, ibX = W - ibR - 96, ibY = H - ibR - 300;
-    const ibBg = this.add.circle(0, 0, ibR, 0x2f5a7d, 0.5).setStrokeStyle(4, 0x57a0c0, 0.8);
-    const ibTxt = this.add.text(0, 0, "✋", { fontSize: "56px", color: "#ffffff" }).setOrigin(0.5);
-    const ib = this.add.container(ibX, ibY, [ibBg, ibTxt]).setScrollFactor(0).setDepth(4000).setVisible(false);
-    ibBg.setInteractive(new Phaser.Geom.Circle(0, 0, ibR), Phaser.Geom.Circle.Contains);
+    // 近接✋ボタン（攻撃⚔ボタンの「真上」に、重ならないよう間隔を空けて配置。near*時のみ表示）。
+    // ☰ と同じく直接オブジェクトで作る（コンテナ＋2カメラだと当たり判定がズレるため）。
+    const aR = 132;                       // 攻撃ボタン半径（addTouchControlsのactionRadiusと一致）
+    const attackTopY = H - aR - 70;       // 攻撃ボタンの上端Y
+    const ibR = 82;
+    const ibX = W - aR - 70;              // 攻撃ボタンと同じ中心X
+    const ibY = attackTopY - 28 - ibR;    // 攻撃ボタン上端から間隔28を空けた真上
+    const ibBg = this.add.circle(ibX, ibY, ibR, 0x2f5a7d, 0.55).setStrokeStyle(4, 0x57a0c0, 0.85)
+      .setScrollFactor(0).setDepth(4000).setInteractive({ useHandCursor: true }).setVisible(false);
+    const ibTxt = this.add.text(ibX, ibY, "✋", { fontSize: "56px", color: "#ffffff" })
+      .setOrigin(0.5).setScrollFactor(0).setDepth(4001).setVisible(false);
     ibBg.on("pointerdown", () => this.tryInteract());
-    this.uiLayer.add(ib);
-    this.interactBtn = ib;
+    this.uiLayer.add([ibBg, ibTxt]);
+    this.interactEls = [ibBg, ibTxt];
   }
 
   private closeTouchMenu() {
@@ -2173,10 +2178,11 @@ export class MmoGameScene extends Phaser.Scene {
       const card = this.makeRelicCard({ cardId: c.id, name: c.name, rarity: c.rarity, w: cellW, h: cellH, owned: count > 0, count, selected: isSel });
       card.setPosition(x, y);
       if (isSel) card.setScale(1.04);
-      // タップで選択＆詳細表示（タッチ操作用。マウスでも可）
-      card.setInteractive(new Phaser.Geom.Rectangle(-cellW / 2, -cellH / 2, cellW, cellH), Phaser.Geom.Rectangle.Contains);
-      card.on("pointerdown", () => { this.binderSel = i; this.binderDetail = true; this.drawBinder(); });
       layer.add(card);
+      // タップ判定は直接の透明Rectangleで（コンテナ＋2カメラだと当たり判定がズレるため）。カードの上に重ねる
+      const hit = this.add.rectangle(x, y, cellW, cellH, 0xffffff, 0.001).setInteractive({ useHandCursor: true });
+      hit.on("pointerdown", () => { this.binderSel = i; this.binderDetail = true; this.drawBinder(); });
+      layer.add(hit);
     });
     // ページ送り（タッチ時・複数ページのみ）
     if (touch && pageCount > 1) {
@@ -2357,7 +2363,8 @@ export class MmoGameScene extends Phaser.Scene {
       this.gatePrompt?.setVisible(false);
     }
     // タッチ✋ボタンは近接対象があるときだけ表示
-    this.interactBtn?.setVisible(!!(this.nearGate || this.nearShop || this.nearTrade || this.nearQuest || this.nearTreasure));
+    const showInteract = !!(this.nearGate || this.nearShop || this.nearTrade || this.nearQuest || this.nearTreasure);
+    for (const el of this.interactEls) (el as any).setVisible(showInteract);
   }
 
   // --- クライアント予測（UnspottableGameScene 流用） ---
