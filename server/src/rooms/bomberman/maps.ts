@@ -87,6 +87,9 @@ function tryPlaceBelt(g: string[][]): boolean {
       if (g[row][c] !== "." || isSpawnSafe(c, row)) return false;
     }
     const ch = Math.random() < 0.5 ? ">" : "<";
+    // 出口列を奇数にする。偶数列だと上下(横)が必ずハードウォールになり横へ抜けられないため。
+    const exitCol = ch === ">" ? start + len : start - 1;
+    if (exitCol % 2 === 0) return false;
     for (let c = start; c < start + len; c++) g[row][c] = ch;
     return true;
   } else {
@@ -99,6 +102,9 @@ function tryPlaceBelt(g: string[][]): boolean {
       if (g[r][col] !== "." || isSpawnSafe(col, r)) return false;
     }
     const ch = Math.random() < 0.5 ? "v" : "^";
+    // 出口行を奇数にする。偶数行だと左右(横)が必ずハードウォールになり横へ抜けられないため。
+    const exitRow = ch === "v" ? start + len : start - 1;
+    if (exitRow % 2 === 0) return false;
     for (let r = start; r < start + len; r++) g[r][col] = ch;
     return true;
   }

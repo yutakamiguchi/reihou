@@ -255,9 +255,19 @@ export class BombermanRoom extends Room<BombermanState> {
       for (let col = 0; col < cols; col++) {
         const b = this.beltDir(this.tileAt(col, row));
         if (!b) continue;
+        // 進行方向の先2マス（出口とその先の床）を確保
         for (let k = 1; k <= 2; k++) {
           const ec = col + b.dc * k, er = row + b.dr * k;
           if (this.tileAt(ec, er) === ".") s.add(cellKey(ec, er));
+        }
+        // 出口（=進行方向の隣が床になる＝ベルト終端）では、その横2方向の床も確保し
+        // 必ず横へ抜けられるようにする（出口列/行は奇数なので横隣は壁にならない）。
+        const xc = col + b.dc, xr = row + b.dr;
+        if (this.tileAt(xc, xr) === ".") {
+          for (const [pc, pr] of [[b.dr, b.dc], [-b.dr, -b.dc]] as const) {
+            const nc = xc + pc, nr = xr + pr;
+            if (this.tileAt(nc, nr) === ".") s.add(cellKey(nc, nr));
+          }
         }
       }
     }
