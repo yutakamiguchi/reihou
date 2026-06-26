@@ -74,10 +74,25 @@ const PLAYER_SPEED = 140;
 const ENTITY_RADIUS = 14;
 const NUM_COLORS = 8;
 
-const ATTACK_RANGE = 72;        // 前方への射程
+const ATTACK_RANGE = 72;        // 前方への射程（剣士=既定値・未選択フォールバック）
 const ATTACK_HALF_WIDTH = 24;   // 進行方向に直交する半幅
 const ATTACK_DURATION_MS = 220;
 const ATTACK_COOLDOWN_MS = 400;
+
+// 職業クラス定義。攻撃の形（ジオメトリ）・クールダウン・ステータス補正を分ける。
+// 弾(schema)は持たず hitscan（即着）で判定する。霊宝の保存則(INV)とは無関係。
+// melee/ranged=前方矩形(range×halfWidth)で最寄り単体、aoe=前方rangeの着弾点中心radiusの範囲全体。
+type ClassDef = {
+  name: string;
+  attack: "melee" | "ranged" | "aoe";
+  range: number; halfWidth: number; radius: number; // ジオメトリ
+  cooldownMs: number; dmgMul: number; hpMul: number;
+};
+const CLASSES: Record<string, ClassDef> = {
+  warrior: { name: "剣士",     attack: "melee",  range: 72,  halfWidth: 24, radius: 0,  cooldownMs: 400, dmgMul: 1.0,  hpMul: 1.3 },
+  archer:  { name: "弓使い",   attack: "ranged", range: 240, halfWidth: 16, radius: 0,  cooldownMs: 500, dmgMul: 1.0,  hpMul: 0.85 },
+  mage:    { name: "魔法使い", attack: "aoe",    range: 110, halfWidth: 0,  radius: 70, cooldownMs: 750, dmgMul: 0.85, hpMul: 0.8 },
+};
 
 const MOB_TARGET_COUNT = 24; // 通常mob（ボス除く）の維持数
 const MOB_AGGRO_RANGE = 260;
@@ -276,11 +291,25 @@ export class MmoRoom extends Room<MmoState> {
 
     this.onMessage("attack", (client) => {
       const input = this.inputs.get(client.sessionId);
-      if (!input) return;
+      const p = this.state.players.get(client.sessionId);
+      if (!input || !p) return;
+      if (!CLASSES[p.klass]) return; // クラス未選択は攻撃不可（先に選ばせる）
       const now = Date.now();
-      if (now - input.lastAttackAt < ATTACK_COOLDOWN_MS) return;
+      const cd = CLASSES[p.klass].cooldownMs;
+      if (now - input.lastAttackAt < cd) return;
       input.attackQueued = true;
       input.lastAttackAt = now;
+    });
+
+    // 職業クラスの選択（初回のみ・原則固定）。
+    this.onMessage("selectClass", (client, message: { klass?: string }) => {
+      const klass = String(message?.klass ?? "");
+      if (!CLASSES[klass]) return;
+      const p = this.state.players.get(client.sessionId);
+      if (!p || p.klass) return; // 既に選択済みなら無視（固定）
+      p.klass = klass;
+      this.recalcStats(p, true); // クラス補正込みで再計算＋全回復
+      this.persistStats(p);
     });
 
     // アイテム使用（サーバー権威）
@@ -369,6 +398,8 @@ export class MmoRoom extends Room<MmoState> {
         p.bonusAtk = typeof s.bonusAtk === "number" ? s.bonusAtk : 0;
         p.bonusDef = typeof s.bonusDef === "number" ? s.bonusDef : 0;
         p.bonusMaxHp = typeof s.bonusMaxHp === "number" ? s.bonusMaxHp : 0;
+        // 職業クラス（recalcStats の前に＝補正を反映させるため）
+        if (typeof s.klass === "string" && CLASSES[s.klass]) p.klass = s.klass;
         if (typeof s.level === "number" && s.level >= 1) {
           p.level = s.level;
           p.exp = typeof s.exp === "number" ? s.exp : 0;
@@ -451,6 +482,7 @@ export class MmoRoom extends Room<MmoState> {
       gold: p.gold, items: Object.fromEntries(p.items.entries()),
       gear: Object.fromEntries(p.gear.entries()), equip: Object.fromEntries(p.equip.entries()),
       bonusAtk: p.bonusAtk, bonusDef: p.bonusDef, bonusMaxHp: p.bonusMaxHp,
+      klass: p.klass,
     });
   }
 
@@ -838,9 +870,31 @@ export class MmoRoom extends Room<MmoState> {
   // --- 戦闘 ---
 
   private resolvePlayerAttack(attacker: MmoPlayer) {
+    const cls = CLASSES[attacker.klass];
+    if (!cls) return; // クラス未選択
     const fx = Math.cos(attacker.dir);
     const fy = Math.sin(attacker.dir);
+    const now = Date.now();
+    const dmg = attacker.atk * cls.dmgMul * (now < attacker.buffAtkUntil ? ATK_BUFF_MUL : 1); // 力の薬バフ
 
+    if (cls.attack === "aoe") {
+      // 前方rangeの着弾点を中心に radius 内の全mobへ範囲ダメージ（複数体撃破に対応）
+      const cx = attacker.x + fx * cls.range;
+      const cy = attacker.y + fy * cls.range;
+      const hits: string[] = [];
+      this.state.mobs.forEach((m, id) => {
+        if (m.alive && Math.hypot(m.x - cx, m.y - cy) <= cls.radius) hits.push(id);
+      });
+      for (const id of hits) {
+        const m = this.state.mobs.get(id)!;
+        m.hp -= dmg;
+        m.hitUntil = now + 150;
+        if (m.hp <= 0) this.onMobKilled(attacker, id, m);
+      }
+      return;
+    }
+
+    // melee/ranged: 前方矩形(range×halfWidth)内の最寄り1体
     let bestId: string | null = null;
     let bestScore = Infinity;
     this.state.mobs.forEach((m, id) => {
@@ -849,17 +903,15 @@ export class MmoRoom extends Room<MmoState> {
       const dy = m.y - attacker.y;
       const forward = dx * fx + dy * fy;
       const side = Math.abs(-dx * fy + dy * fx);
-      if (forward <= 0 || forward > ATTACK_RANGE) return;
-      if (side > ATTACK_HALF_WIDTH) return;
+      if (forward <= 0 || forward > cls.range) return;
+      if (side > cls.halfWidth) return;
       const score = forward + side * 0.5;
       if (score < bestScore) { bestScore = score; bestId = id; }
     });
 
     if (!bestId) return;
     const mob = this.state.mobs.get(bestId)!;
-    const now = Date.now();
-    const atk = attacker.atk * (now < attacker.buffAtkUntil ? ATK_BUFF_MUL : 1); // 力の薬バフ
-    mob.hp -= atk;
+    mob.hp -= dmg;
     mob.hitUntil = now + 150;
     if (mob.hp <= 0) this.onMobKilled(attacker, bestId, mob);
   }
@@ -1014,8 +1066,12 @@ export class MmoRoom extends Room<MmoState> {
       const d = EQUIP[id];
       if (d) { eqAtk += d.atk ?? 0; eqDef += d.def ?? 0; eqHp += d.maxHp ?? 0; }
     });
-    p.maxHp = maxHpFor(p.level) + p.bonusMaxHp + eqHp;
-    p.atk = atkFor(p.level) + p.bonusAtk + eqAtk;
+    // クラス補正（未選択は ×1）。HP/攻撃に乗算してから整数化。
+    const cls = CLASSES[p.klass];
+    const hpMul = cls?.hpMul ?? 1;
+    const dmgMul = cls?.dmgMul ?? 1;
+    p.maxHp = Math.round((maxHpFor(p.level) + p.bonusMaxHp + eqHp) * hpMul);
+    p.atk = Math.round((atkFor(p.level) + p.bonusAtk + eqAtk) * dmgMul);
     p.def = 1 + p.bonusDef + eqDef;
     p.hp = healFull ? p.maxHp : Math.min(p.hp, p.maxHp);
   }

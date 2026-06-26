@@ -4,6 +4,7 @@ import { Schema, MapSchema, type } from "@colyseus/schema";
 export class MmoPlayer extends Schema {
   @type("string") id: string = "";   // = sessionId
   @type("string") name: string = "";
+  @type("string") klass: string = ""; // 職業クラス（""=未選択 / warrior/archer/mage）。攻撃の形・補正が変わる
   @type("number") x: number = 0;
   @type("number") y: number = 0;
   @type("number") vx: number = 0;

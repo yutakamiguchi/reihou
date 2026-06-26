@@ -6,6 +6,7 @@ import {
 } from "../../character";
 import { sfxHitPlayer, sfxHitNpc, sfxScore, sfxFootstep, sfxRoundStart } from "../../sfx";
 import { addMoveKeys } from "../../ui/inputKeys";
+import { addTouchControls, type TouchControls } from "../../ui/touchControls";
 import { makeInput } from "../../ui/nameInput";
 import {
   fetchCards, fetchMyCards, fetchOpenTrades, proposeTrade, acceptTrade, cancelTrade,
@@ -27,6 +28,14 @@ const ENTITY_RADIUS = 14;
 const CHAR_DISPLAY_H = 56;
 const MOB_DISPLAY_H = 52;
 const MMO_VIEW_W = 985; // カメラに映す「ワールドの横幅(px)」。解像度に依らず見える範囲を一定にするための基準
+
+// 職業クラス（表示用メタ。実数値・攻撃判定はサーバー権威）。key はサーバー CLASSES と一致。
+const CLASS_META: Array<{ key: string; name: string; icon: string; tag: string; desc: string }> = [
+  { key: "warrior", name: "剣士",     icon: "⚔️", tag: "近接・高HP",   desc: "前方を斬る近接攻撃。HPが高く打たれ強い。手数で押す王道。" },
+  { key: "archer",  name: "弓使い",   icon: "🏹", tag: "遠距離・単体", desc: "遠くの敵を一体ずつ射抜く。射程が長く安全に戦えるがHPは低め。" },
+  { key: "mage",    name: "魔法使い", icon: "🔮", tag: "範囲攻撃",     desc: "前方に範囲ダメージ。群れをまとめて焼くが隙が大きくHPは低い。" },
+];
+const CLASS_LABEL: Record<string, string> = Object.fromEntries(CLASS_META.map((c) => [c.key, `${c.icon} ${c.name}`]));
 
 // 世界地図のエリア定義。key=地形ID（state.ground と一致）、travel=移動先エリア文字列。
 // mx,my は地図パネル内の相対位置 0..1（worldmap.png の地点と一致させる）。エリア追加はここに足すだけ。
@@ -112,6 +121,10 @@ export class MmoGameScene extends Phaser.Scene {
   private cardById = new Map<number, Card>(); // 霊宝メタ（ドロップ表示用）
   private binderLayer?: Phaser.GameObjects.Container;
   private statusLayer?: Phaser.GameObjects.Container;
+  private classLayer?: Phaser.GameObjects.Container; // 職業クラス選択モーダル（初回・強制）
+  private menuLayer?: Phaser.GameObjects.Container;  // タッチ用 ☰ メニュー
+  private touch!: TouchControls;                     // タッチ操作（スティック＋攻撃ボタン）
+  private interactBtn?: Phaser.GameObjects.Container; // タッチ用 近接✋ボタン（near*時のみ表示）
   private statusTab: "status" | "items" | "equip" | "other" = "status";
   private statusContent?: Phaser.GameObjects.Container;
   private statusTabs: Array<{ key: string; bg: Phaser.GameObjects.Rectangle; label: Phaser.GameObjects.Text }> = [];
@@ -188,6 +201,8 @@ export class MmoGameScene extends Phaser.Scene {
     this.lastInputSent = { up: false, down: false, left: false, right: false };
     this.binderLayer = undefined;
     this.statusLayer = undefined;
+    this.classLayer = undefined;
+    this.menuLayer = undefined;
     this.worldmapLayer = undefined;
     this.binderDetail = false;
     this.cardById.clear();
@@ -458,6 +473,17 @@ export class MmoGameScene extends Phaser.Scene {
     }).setScrollFactor(0).setDepth(1000);
     this.uiLayer.add([hudBg, this.hudText, this.hpBarBg, this.hpBarFg, this.expBarBg, this.expBarFg, this.deadText, controlsHint, this.hudExtra]);
 
+    // --- タッチ操作（スマホのみ。スティック=移動 / 赤ボタン=攻撃）---
+    this.touch = addTouchControls(this, {
+      onAction: () => { if (!this.overlayOpen()) this.room.send("attack"); },
+      actionLabel: "⚔",
+      layer: this.uiLayer,
+    });
+    if (this.touch.enabled) {
+      controlsHint.setText("☰ メニュー　/　⚔ 攻撃　/　✋ アクション");
+      this.buildTouchHud();
+    }
+
     // --- 入力 ---
     this.keys = addMoveKeys(this);
     this.keys.SPACE.on("down", () => { if (!this.overlayOpen()) this.room.send("attack"); });
@@ -475,7 +501,9 @@ export class MmoGameScene extends Phaser.Scene {
     this.input.keyboard!.on("keydown-W", () => selKey(0, -1));
     this.input.keyboard!.on("keydown-S", () => selKey(0, 1));
     this.input.keyboard!.on("keydown-ESC", () => {
-      if (this.questLayer) this.closeQuestBoard();
+      if (this.classLayer) return; // クラス未選択中は閉じさせない（強制）
+      if (this.menuLayer) this.closeTouchMenu();
+      else if (this.questLayer) this.closeQuestBoard();
       else if (this.tradeLayer) this.closeTrade();
       else if (this.shopLayer) this.closeShop();
       else if (this.worldmapLayer) this.closeWorldMap();
@@ -505,14 +533,7 @@ export class MmoGameScene extends Phaser.Scene {
     this.input.keyboard!.on("keydown-TWO", () => numKey("items", "rare", 1));
     this.input.keyboard!.on("keydown-THREE", () => numKey("equip", "legend", 2));
     this.input.keyboard!.on("keydown-FOUR", () => numKey("other", null, 3));
-    this.input.keyboard!.on("keydown-E", () => { // ショップ / ゲート / 宝箱
-      if (this.overlayOpen()) return;
-      if (this.nearShop) this.openShop();
-      else if (this.nearTrade) void this.openTrade();
-      else if (this.nearQuest) this.openQuestBoard();
-      else if (this.nearGate) void this.tryTravel();
-      else if (this.nearTreasure) this.room.send("openTreasure", { id: this.nearTreasure });
-    });
+    this.input.keyboard!.on("keydown-E", () => this.tryInteract()); // ショップ / ゲート / 宝箱
 
     // エリア名＋移動プロンプト（画面固定）。狩場は「草原 B2」のように階層も表示
     const areaTitle = isTown
@@ -559,6 +580,13 @@ export class MmoGameScene extends Phaser.Scene {
       $(p).listen("level", (nv: number, ov: number | undefined) => {
         if (ov !== undefined && nv > ov) this.popLevelUp(id);
       });
+      if (id === this.myId) {
+        // 自分のクラス。未選択(="")なら強制モーダル、選択されたら閉じる。
+        $(p).listen("klass", (val: string) => {
+          if (val) this.closeClassSelect();
+          else this.openClassSelect();
+        });
+      }
     });
     $(state).players.onRemove((_p: any, id: string) => this.removePlayerView(id));
 
@@ -880,6 +908,16 @@ export class MmoGameScene extends Phaser.Scene {
     void this.travelToArea(this.nearGate.toArea);
   }
 
+  // 近接アクション[E]（キーボード／タッチ✋ボタン共通）。near* の優先順で1つ実行。
+  private tryInteract() {
+    if (this.overlayOpen()) return;
+    if (this.nearShop) this.openShop();
+    else if (this.nearTrade) void this.openTrade();
+    else if (this.nearQuest) this.openQuestBoard();
+    else if (this.nearGate) void this.tryTravel();
+    else if (this.nearTreasure) this.room.send("openTreasure", { id: this.nearTreasure });
+  }
+
   // 指定エリアへ移動（ゲート / 世界地図 共通）。
   private async travelToArea(area: string) {
     if (this.traveling) return;
@@ -957,6 +995,8 @@ export class MmoGameScene extends Phaser.Scene {
 
     layer.add(this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.82).setInteractive());
     layer.add(this.add.text(width / 2, 34, "世界地図", { fontSize: "30px", color: "#e8c87e", fontStyle: "bold" }).setOrigin(0.5));
+    layer.add(this.add.text(width - 30, 24, "✕ 閉じる (M)", { fontSize: "16px", color: "#cccccc" }).setOrigin(1, 0)
+      .setInteractive({ useHandCursor: true }).on("pointerdown", () => this.closeWorldMap()));
 
     // 地図パネル（地形イラスト＝worldmap、無ければ羊皮紙色のベタ＋繋がり線）
     const pw = Math.min(820, width - 80), ph = pw / (1640 / 880); // 地図画像のアスペクト比に合わせる
@@ -992,6 +1032,13 @@ export class MmoGameScene extends Phaser.Scene {
       const ringColor = isCur ? 0xe8b04b : isSel ? 0x2aa6c0 : 0x6b4f2a;
       const ring = this.add.circle(p.x, p.y, 26, 0x231a12, 0.96).setStrokeStyle(isCur || isSel ? 5 : 3, ringColor);
       layer.add(ring);
+      // タップで選択＋移動（タッチ操作用。現在地と到達不能エリアは無視）
+      const idx = reach.indexOf(a.key);
+      if (idx >= 0 && !isCur) {
+        const hit = this.add.circle(p.x, p.y, 40, 0xffffff, 0.001).setInteractive({ useHandCursor: true });
+        hit.on("pointerdown", () => { this.worldmapSel = idx; this.travelFromMap(); });
+        layer.add(hit);
+      }
       if (isSel && !isCur) {
         this.tweens.add({ targets: ring, scale: { from: 1, to: 1.15 }, duration: 600, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
       }
@@ -1013,7 +1060,7 @@ export class MmoGameScene extends Phaser.Scene {
     } else {
       layer.add(this.add.text(width / 2, by, "ここから行ける場所はまだありません", { fontSize: "16px", color: "#9b93b0" }).setOrigin(0.5));
     }
-    layer.add(this.add.text(width / 2, height - 24, "← → 選択　・　Enter 移動　・　M / Esc 閉じる", { fontSize: "13px", color: "#6a6285" }).setOrigin(0.5));
+    layer.add(this.add.text(width / 2, height - 24, "エリアをタップで移動　・　← → 選択 / Enter 移動　・　M / Esc 閉じる", { fontSize: "13px", color: "#6a6285" }).setOrigin(0.5));
   }
 
   // mob討伐などで霊宝を入手したときのポップアップ（画面固定）。
@@ -1086,6 +1133,130 @@ export class MmoGameScene extends Phaser.Scene {
   private closeShop() {
     this.shopLayer?.destroy();
     this.shopLayer = undefined;
+  }
+
+  // --- 職業クラス選択（初回・強制モーダル）---
+
+  private closeClassSelect() {
+    this.classLayer?.destroy();
+    this.classLayer = undefined;
+  }
+
+  private openClassSelect() {
+    if (this.classLayer) return; // 既に開いている
+    const { width, height } = this.scale;
+    const cx = width / 2;
+    const layer = this.add.container(0, 0).setScrollFactor(0).setDepth(7500);
+    this.uiLayer.add(layer);
+    this.classLayer = layer;
+
+    layer.add(this.add.rectangle(cx, height / 2, width, height, 0x000000, 0.9).setInteractive());
+    const pw = Math.min(820, width - 60), ph = Math.min(430, height - 60);
+    const px = cx - pw / 2, py = (height - ph) / 2;
+    layer.add(this.add.rectangle(cx, py + ph / 2, pw, ph, 0x161122, 0.98).setStrokeStyle(2, 0x6b5a8f));
+    layer.add(this.add.text(cx, py + 28, "職業を選択", { fontSize: "26px", color: "#e8c87e", fontStyle: "bold" }).setOrigin(0.5));
+    layer.add(this.add.text(cx, py + 60, "一度選ぶと変更できません。攻撃の形とステータスが変わります。", { fontSize: "14px", color: "#bdb6d0" }).setOrigin(0.5));
+
+    const n = CLASS_META.length;
+    const gap = 24, cardW = Math.min(230, (pw - 56 - gap * (n - 1)) / n), cardH = ph - 150;
+    const totalW = cardW * n + gap * (n - 1);
+    const startX = cx - totalW / 2;
+    const cardTop = py + 86;
+    CLASS_META.forEach((c, i) => {
+      const bx = startX + i * (cardW + gap);
+      const card = this.add.rectangle(bx, cardTop, cardW, cardH, 0x1c1530, 0.95).setOrigin(0, 0)
+        .setStrokeStyle(2, 0x4a4360).setInteractive({ useHandCursor: true });
+      const mx = bx + cardW / 2;
+      const icon = this.add.text(mx, cardTop + 44, c.icon, { fontSize: "44px" }).setOrigin(0.5);
+      const name = this.add.text(mx, cardTop + 92, c.name, { fontSize: "20px", color: "#ece7f5", fontStyle: "bold" }).setOrigin(0.5);
+      const tag = this.add.text(mx, cardTop + 118, c.tag, { fontSize: "13px", color: "#e8c87e", fontStyle: "bold" }).setOrigin(0.5);
+      const desc = this.add.text(mx, cardTop + 150, c.desc, {
+        fontSize: "12px", color: "#bdb6d0", align: "center", wordWrap: { width: cardW - 24 },
+      }).setOrigin(0.5, 0);
+      const btnY = cardTop + cardH - 30;
+      const btn = this.add.rectangle(mx, btnY, cardW - 36, 36, 0x2f7d4f).setStrokeStyle(1, 0x57c084)
+        .setInteractive({ useHandCursor: true });
+      const btnT = this.add.text(mx, btnY, "これにする", { fontSize: "15px", color: "#ffffff", fontStyle: "bold" }).setOrigin(0.5);
+      const pick = () => this.selectClass(c.key);
+      card.on("pointerover", () => card.setStrokeStyle(2, 0x8a7ab5));
+      card.on("pointerout", () => card.setStrokeStyle(2, 0x4a4360));
+      card.on("pointerdown", pick);
+      btn.on("pointerdown", pick);
+      layer.add([card, icon, name, tag, desc, btn, btnT]);
+    });
+  }
+
+  private selectClass(klass: string) {
+    if (!CLASS_LABEL[klass]) return;
+    this.room.send("selectClass", { klass });
+    sfxScore();
+    // 反映は klass の listen 経由で closeClassSelect される
+  }
+
+  // --- タッチHUD（☰メニューボタン＋近接✋ボタン。スマホのみ）---
+
+  private buildTouchHud() {
+    const W = this.scale.width;
+    const H = this.scale.height;
+    // ☰ メニューボタン（右上）
+    const mbR = 44, mbX = W - mbR - 30, mbY = mbR + 30;
+    const mbBg = this.add.circle(mbX, mbY, mbR, 0x161122, 0.7).setStrokeStyle(3, 0x8a7ab5, 0.8)
+      .setScrollFactor(0).setDepth(4000).setInteractive({ useHandCursor: true });
+    const mbTxt = this.add.text(mbX, mbY, "☰", { fontSize: "40px", color: "#ece7f5" })
+      .setOrigin(0.5).setScrollFactor(0).setDepth(4001);
+    mbBg.on("pointerdown", () => { if (this.menuLayer) this.closeTouchMenu(); else this.openTouchMenu(); });
+    this.uiLayer.add([mbBg, mbTxt]);
+
+    // 近接✋ボタン（右下・攻撃ボタンの上。near*時のみ表示）
+    const ibR = 64, ibX = W - ibR - 88, ibY = H - ibR - 250;
+    const ibBg = this.add.circle(0, 0, ibR, 0x2f5a7d, 0.5).setStrokeStyle(4, 0x57a0c0, 0.8);
+    const ibTxt = this.add.text(0, 0, "✋", { fontSize: "40px", color: "#ffffff" }).setOrigin(0.5);
+    const ib = this.add.container(ibX, ibY, [ibBg, ibTxt]).setScrollFactor(0).setDepth(4000).setVisible(false);
+    ibBg.setInteractive(new Phaser.Geom.Circle(0, 0, ibR), Phaser.Geom.Circle.Contains);
+    ibBg.on("pointerdown", () => this.tryInteract());
+    this.uiLayer.add(ib);
+    this.interactBtn = ib;
+  }
+
+  private closeTouchMenu() {
+    this.menuLayer?.destroy();
+    this.menuLayer = undefined;
+  }
+
+  private openTouchMenu() {
+    if (this.overlayOpen()) return;
+    const { width, height } = this.scale;
+    const cx = width / 2;
+    const layer = this.add.container(0, 0).setScrollFactor(0).setDepth(7000);
+    this.uiLayer.add(layer);
+    this.menuLayer = layer;
+    layer.add(this.add.rectangle(cx, height / 2, width, height, 0x000000, 0.78).setInteractive()
+      .on("pointerdown", () => this.closeTouchMenu()));
+    const pw = Math.min(440, width - 80);
+    const px = cx - pw / 2;
+    let y = height / 2 - 210;
+    const me: any = (this.room.state as any).players.get(this.myId);
+    const row = (label: string, onTap: () => void, sub = "") => {
+      const h = 56;
+      const bg = this.add.rectangle(cx, y, pw, h, 0x1c1530, 0.98).setStrokeStyle(2, 0x4a4360)
+        .setInteractive({ useHandCursor: true });
+      bg.on("pointerdown", () => { this.closeTouchMenu(); onTap(); });
+      const t = this.add.text(px + 24, y, label, { fontSize: "22px", color: "#ece7f5", fontStyle: "bold" }).setOrigin(0, 0.5);
+      layer.add([bg, t]);
+      if (sub) layer.add(this.add.text(px + pw - 24, y, sub, { fontSize: "16px", color: "#9b93b0" }).setOrigin(1, 0.5));
+      y += h + 12;
+    };
+    row("📖 台帳", () => this.toggleBinder());
+    row("📊 ステータス", () => this.toggleStatus());
+    row("🗺 地図", () => this.toggleWorldMap());
+    // アイテム（所持しているものだけ。押下で即使用）
+    ITEM_ORDER.forEach((id) => {
+      const n = (me?.items?.get(id) ?? 0) as number;
+      if (n > 0) row(`${ITEM_META[id]?.icon ?? "🧪"} ${ITEM_META[id]?.name ?? id}`, () => this.useItem(id), `×${n}`);
+    });
+    row("🏠 ハブに戻る", () => this.room.leave());
+    layer.add(this.add.text(cx, y + 6, "✕ 閉じる", { fontSize: "18px", color: "#cccccc" }).setOrigin(0.5)
+      .setInteractive({ useHandCursor: true }).on("pointerdown", () => this.closeTouchMenu()));
   }
 
   private openShop() {
@@ -1636,7 +1807,7 @@ export class MmoGameScene extends Phaser.Scene {
     if (me && now < (me.buffAtkUntil ?? 0)) buffs.push(`💪攻撃UP ${Math.ceil((me.buffAtkUntil - now) / 1000)}s`);
     if (me && now < (me.buffSpeedUntil ?? 0)) buffs.push(`👟速度UP ${Math.ceil((me.buffSpeedUntil - now) / 1000)}s`);
     const rows: Array<[string, string]> = me
-      ? [["攻撃力", `${me.atk}`], ["防御力", `${me.def ?? 0}`], ["討伐数", `${me.kills ?? 0}`], ["ゴールド", `🪙 ${me.gold ?? 0}`],
+      ? [["クラス", CLASS_LABEL[me.klass] ?? "未選択"], ["攻撃力", `${me.atk}`], ["防御力", `${me.def ?? 0}`], ["討伐数", `${me.kills ?? 0}`], ["ゴールド", `🪙 ${me.gold ?? 0}`],
          ["プレイ時間", fmtTime(me.playSec)], ["効果中", buffs.length ? buffs.join("  ") : "なし"]]
       : [["", "（世界に入ると表示）"]];
     rows.forEach((r, i) => {
@@ -1838,7 +2009,7 @@ export class MmoGameScene extends Phaser.Scene {
     this.binderLayer = undefined;
   }
 
-  private overlayOpen(): boolean { return !!(this.binderLayer || this.statusLayer || this.worldmapLayer || this.shopLayer || this.tradeLayer || this.questLayer); }
+  private overlayOpen(): boolean { return !!(this.binderLayer || this.statusLayer || this.classLayer || this.menuLayer || this.worldmapLayer || this.shopLayer || this.tradeLayer || this.questLayer); }
 
   // --- チャット（/ で開く）---
 
@@ -1929,7 +2100,9 @@ export class MmoGameScene extends Phaser.Scene {
     layer.add(this.add.text(cx, 26, "霊宝台帳", { fontSize: "26px", color: "#e8c87e", fontStyle: "bold" }).setOrigin(0.5));
     const info = this.add.text(cx, 58, "読み込み中…", { fontSize: "14px", color: "#9b93b0" }).setOrigin(0.5);
     layer.add(info);
-    const close = this.add.text(width - 30, 24, "✕ 閉じる (B)", { fontSize: "16px", color: "#cccccc" }).setOrigin(1, 0);
+    const close = this.add.text(width - 30, 24, "✕ 閉じる (B)", { fontSize: "16px", color: "#cccccc" }).setOrigin(1, 0)
+      .setInteractive({ useHandCursor: true });
+    close.on("pointerdown", () => this.closeBinder());
     layer.add(close);
 
     const tabs: Array<{ key: "common" | "rare" | "legend"; label: string; num: string }> = [
@@ -1937,12 +2110,14 @@ export class MmoGameScene extends Phaser.Scene {
     ];
     tabs.forEach((t, i) => {
       const on = this.binderTab === t.key;
-      layer.add(this.add.text(cx - 130 + i * 130, 92, `${t.num}: ${t.label}`, {
+      const tabTxt = this.add.text(cx - 130 + i * 130, 92, `${t.num}: ${t.label}`, {
         fontSize: "18px", fontStyle: "bold",
         color: on ? "#15101f" : RARITY_META[t.key].colorStr,
         backgroundColor: on ? RARITY_META[t.key].colorStr : "#1c1530",
         padding: { x: 14, y: 6 } as any,
-      }).setOrigin(0.5));
+      }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+      tabTxt.on("pointerdown", () => this.setBinderTab(t.key));
+      layer.add(tabTxt);
     });
     layer.add(this.add.text(cx, 120, "1/2/3 タブ　・　矢印/WASD 選択　・　B 閉じる", { fontSize: "12px", color: "#6a6285" }).setOrigin(0.5));
 
@@ -1973,9 +2148,12 @@ export class MmoGameScene extends Phaser.Scene {
       const card = this.makeRelicCard({ cardId: c.id, name: c.name, rarity: c.rarity, w: cellW, h: cellH, owned: count > 0, count, selected: isSel });
       card.setPosition(x, y);
       if (isSel) card.setScale(1.04);
+      // タップで選択＆詳細表示（タッチ操作用。マウスでも可）
+      card.setInteractive(new Phaser.Geom.Rectangle(-cellW / 2, -cellH / 2, cellW, cellH), Phaser.Geom.Rectangle.Contains);
+      card.on("pointerdown", () => { this.binderSel = i; this.binderDetail = true; this.drawBinder(); });
       layer.add(card);
     });
-    layer.add(this.add.text(cx, height - 30, "Enter で選択中の霊宝を詳細表示", { fontSize: "13px", color: "#7ee787" }).setOrigin(0.5));
+    layer.add(this.add.text(cx, height - 30, "霊宝をタップ / Enter で詳細表示", { fontSize: "13px", color: "#7ee787" }).setOrigin(0.5));
   }
 
   // 詳細表示：左に拡大した霊宝（水平＝縦軸まわりに反時計回転、90度で縦線）、右に説明文。
@@ -1983,7 +2161,9 @@ export class MmoGameScene extends Phaser.Scene {
     const layer = this.binderLayer!;
     const cache = this.binderCache!;
     const { width, height } = this.scale;
-    layer.add(this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.9).setInteractive());
+    // 背景タップで一覧へ戻る（タッチ操作用）
+    layer.add(this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.9).setInteractive()
+      .on("pointerdown", () => { this.binderDetail = false; this.drawBinder(); }));
 
     const list = cache.cards.filter((c) => c.rarity === this.binderTab);
     this.binderSel = Math.max(0, Math.min(this.binderSel, list.length - 1));
@@ -2014,7 +2194,7 @@ export class MmoGameScene extends Phaser.Scene {
     layer.add(this.add.text(rx, cy - 40, desc, { fontSize: "19px", color: "#cccccc", wordWrap: { width: width * 0.4 }, lineSpacing: 8 }).setOrigin(0, 0));
     layer.add(this.add.text(rx, cy + 60, `世界総数：${c.world_supply}\n残り在庫：${c.world_reserve}\n所持：${count}`, { fontSize: "16px", color: "#9b93b0", lineSpacing: 8 }).setOrigin(0, 0));
 
-    layer.add(this.add.text(width / 2, height - 30, "← → / WASD で隣の霊宝　・　ESC または Enter で一覧へ", { fontSize: "13px", color: "#6a6285" }).setOrigin(0.5));
+    layer.add(this.add.text(width / 2, height - 30, "← → / WASD で隣の霊宝　・　タップ / ESC / Enter で一覧へ", { fontSize: "13px", color: "#6a6285" }).setOrigin(0.5));
   }
 
   update(_t: number, dtMs: number) {
@@ -2023,10 +2203,11 @@ export class MmoGameScene extends Phaser.Scene {
 
     // 入力送信（台帳/ステータス/チャット中は移動しない）
     const ov = this.overlayOpen() || this.chatOpen;
-    const up = !ov && (this.keys.W.isDown || this.keys.UP.isDown);
-    const down = !ov && (this.keys.S.isDown || this.keys.DOWN.isDown);
-    const left = !ov && (this.keys.A.isDown || this.keys.LEFT.isDown);
-    const right = !ov && (this.keys.D.isDown || this.keys.RIGHT.isDown);
+    const t = this.touch.held;
+    const up = !ov && (this.keys.W.isDown || this.keys.UP.isDown || t.up);
+    const down = !ov && (this.keys.S.isDown || this.keys.DOWN.isDown || t.down);
+    const left = !ov && (this.keys.A.isDown || this.keys.LEFT.isDown || t.left);
+    const right = !ov && (this.keys.D.isDown || this.keys.RIGHT.isDown || t.right);
     const last = this.lastInputSent;
     if (up !== last.up || down !== last.down || left !== last.left || right !== last.right) {
       this.lastInputSent = { up, down, left, right };
@@ -2119,11 +2300,12 @@ export class MmoGameScene extends Phaser.Scene {
           if (d <= bestD) { bestD = d; this.nearTreasure = id; }
         });
       }
-      if (near) this.gatePrompt?.setText(`[E] ${near.label}`).setVisible(true);
-      else if (this.nearShop) this.gatePrompt?.setText("[E] ショップ").setVisible(true);
-      else if (this.nearTrade) this.gatePrompt?.setText("[E] 取引所").setVisible(true);
-      else if (this.nearQuest) this.gatePrompt?.setText("[E] クエスト受注所").setVisible(true);
-      else if (this.nearTreasure) this.gatePrompt?.setText("[E] 宝箱を開ける").setVisible(true);
+      const k = this.touch.enabled ? "✋" : "[E]"; // タッチ時はキー表記をボタン表記に
+      if (near) this.gatePrompt?.setText(`${k} ${near.label}`).setVisible(true);
+      else if (this.nearShop) this.gatePrompt?.setText(`${k} ショップ`).setVisible(true);
+      else if (this.nearTrade) this.gatePrompt?.setText(`${k} 取引所`).setVisible(true);
+      else if (this.nearQuest) this.gatePrompt?.setText(`${k} クエスト受注所`).setVisible(true);
+      else if (this.nearTreasure) this.gatePrompt?.setText(`${k} 宝箱を開ける`).setVisible(true);
       else this.gatePrompt?.setVisible(false);
     } else {
       this.nearGate = null;
@@ -2133,6 +2315,8 @@ export class MmoGameScene extends Phaser.Scene {
       this.nearTreasure = null;
       this.gatePrompt?.setVisible(false);
     }
+    // タッチ✋ボタンは近接対象があるときだけ表示
+    this.interactBtn?.setVisible(!!(this.nearGate || this.nearShop || this.nearTrade || this.nearQuest || this.nearTreasure));
   }
 
   // --- クライアント予測（UnspottableGameScene 流用） ---
@@ -2329,7 +2513,11 @@ export class MmoGameScene extends Phaser.Scene {
       applyCharPose(v.sprite, v.dir, "idle", v.flip, CHAR_DISPLAY_H);
       v.sprite.setPosition(0, 0);
     });
-    this.spawnConeFlash(v.container.x, v.container.y, entity.dir);
+    // クラス別の攻撃エフェクト
+    const klass = String(entity.klass ?? "");
+    if (klass === "archer") this.spawnArrowFx(v.container.x, v.container.y, entity.dir);
+    else if (klass === "mage") this.spawnMageFx(v.container.x, v.container.y, entity.dir);
+    else this.spawnConeFlash(v.container.x, v.container.y, entity.dir);
   }
 
   private spawnConeFlash(x: number, y: number, dir: number) {
@@ -2340,6 +2528,32 @@ export class MmoGameScene extends Phaser.Scene {
       .setRotation(dir).setDepth(4900);
     this.worldLayer.add(rect);
     this.tweens.add({ targets: rect, alpha: 0, duration: 160, onComplete: () => rect.destroy() });
+  }
+
+  // 弓使い：前方へ細い矢ラインを飛ばす（射程240に合わせる）。
+  private spawnArrowFx(x: number, y: number, dir: number) {
+    const range = 240;
+    const x0 = x + Math.cos(dir) * 16, y0 = y + Math.sin(dir) * 16;
+    const arrow = this.add.rectangle(x0, y0, 26, 4, 0xffe9a8, 0.95).setRotation(dir).setDepth(4900);
+    this.worldLayer.add(arrow);
+    this.tweens.add({
+      targets: arrow,
+      x: x + Math.cos(dir) * range, y: y + Math.sin(dir) * range,
+      duration: 180, ease: "Quad.easeOut",
+      onComplete: () => { this.tweens.add({ targets: arrow, alpha: 0, duration: 80, onComplete: () => arrow.destroy() }); },
+    });
+  }
+
+  // 魔法使い：前方110の着弾点に半径70の範囲フラッシュ（サーバーのaoeと一致）。
+  private spawnMageFx(x: number, y: number, dir: number) {
+    const cx = x + Math.cos(dir) * 110, cy = y + Math.sin(dir) * 110;
+    const ring = this.add.circle(cx, cy, 70, 0x9a7bff, 0.28).setStrokeStyle(3, 0xc4aaff, 0.9).setDepth(4900);
+    this.worldLayer.add(ring);
+    ring.setScale(0.4);
+    this.tweens.add({
+      targets: ring, scale: 1, alpha: { from: 0.5, to: 0 },
+      duration: 280, ease: "Quad.easeOut", onComplete: () => ring.destroy(),
+    });
   }
 
   private popDamage(id: string, dmg: number) {
