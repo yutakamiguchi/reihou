@@ -17,6 +17,10 @@ interface Opts {
   actionLabel?: string;   // ボタンに出す文字（例: "💣" / "攻撃"）
   deadZone?: number;      // 入力とみなす最小距離(px)
   maxRadius?: number;     // スティックの最大振れ幅(px)
+  // ボタン/スティックの大きさ上書き（省略時は既定値。スマホで押しやすく大型化したい時に指定）
+  actionRadius?: number;  // アクションボタン半径（既定100）
+  stickBaseRadius?: number;  // スティック土台の半径（既定110）
+  stickThumbRadius?: number; // スティックつまみの半径（既定52）
   // 2カメラ構成のシーンで、生成した操作UIをこのLayer(=UI専用カメラ側)に載せる。
   // 省略時はシーン直下（単一カメラのシーン用）。
   layer?: Phaser.GameObjects.Layer;
@@ -46,8 +50,8 @@ export function addTouchControls(scene: Phaser.Scene, opts: Opts): TouchControls
   scene.input.addPointer(2);
 
   // --- 仮想ジョイスティック（左半分のどこを触ってもそこに出現） ---
-  const baseR = 110;
-  const thumbR = 52;
+  const baseR = opts.stickBaseRadius ?? 110;
+  const thumbR = opts.stickThumbRadius ?? 52;
   const stickBase = scene.add.circle(0, 0, baseR, 0x000000, 0.22)
     .setStrokeStyle(4, 0xffffff, 0.35).setScrollFactor(0).setDepth(DEPTH).setVisible(false);
   const stickThumb = scene.add.circle(0, 0, thumbR, 0xffffff, 0.45)
@@ -57,13 +61,13 @@ export function addTouchControls(scene: Phaser.Scene, opts: Opts): TouchControls
   let originX = 0, originY = 0;
 
   // --- アクションボタン（右下固定） ---
-  const btnR = 100;
+  const btnR = opts.actionRadius ?? 100;
   const btnX = W - btnR - 70;
   const btnY = H - btnR - 70;
   const actionBtn = scene.add.circle(btnX, btnY, btnR, 0xff5555, 0.30)
     .setStrokeStyle(5, 0xff7777, 0.7).setScrollFactor(0).setDepth(DEPTH);
   const actionTxt = scene.add.text(btnX, btnY, opts.actionLabel ?? "●", {
-    fontSize: "48px", color: "#ffffff", fontStyle: "bold",
+    fontSize: `${Math.round(btnR * 0.48)}px`, color: "#ffffff", fontStyle: "bold",
   }).setOrigin(0.5).setScrollFactor(0).setDepth(DEPTH + 1);
   let actionPointerId = -1;
 

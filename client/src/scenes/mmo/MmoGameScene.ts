@@ -478,6 +478,11 @@ export class MmoGameScene extends Phaser.Scene {
       onAction: () => { if (!this.overlayOpen()) this.room.send("attack"); },
       actionLabel: "⚔",
       layer: this.uiLayer,
+      // スマホで押しやすいよう大型化（攻撃ボタン・スティック）
+      actionRadius: 132,
+      stickBaseRadius: 140,
+      stickThumbRadius: 68,
+      maxRadius: 115,
     });
     if (this.touch.enabled) {
       controlsHint.setText("☰ メニュー　/　⚔ 攻撃　/　✋ アクション");
@@ -995,7 +1000,7 @@ export class MmoGameScene extends Phaser.Scene {
 
     layer.add(this.add.rectangle(width / 2, height / 2, width, height, 0x000000, 0.82).setInteractive());
     layer.add(this.add.text(width / 2, 34, "世界地図", { fontSize: "30px", color: "#e8c87e", fontStyle: "bold" }).setOrigin(0.5));
-    layer.add(this.add.text(width - 30, 24, "✕ 閉じる (M)", { fontSize: "16px", color: "#cccccc" }).setOrigin(1, 0)
+    layer.add(this.add.text(width - 30, 24, "✕ 閉じる (M)", { fontSize: this.touch.enabled ? "26px" : "16px", color: "#cccccc" }).setOrigin(1, 0)
       .setInteractive({ useHandCursor: true }).on("pointerdown", () => this.closeWorldMap()));
 
     // 地図パネル（地形イラスト＝worldmap、無ければ羊皮紙色のベタ＋繋がり線）
@@ -1035,7 +1040,7 @@ export class MmoGameScene extends Phaser.Scene {
       // タップで選択＋移動（タッチ操作用。現在地と到達不能エリアは無視）
       const idx = reach.indexOf(a.key);
       if (idx >= 0 && !isCur) {
-        const hit = this.add.circle(p.x, p.y, 40, 0xffffff, 0.001).setInteractive({ useHandCursor: true });
+        const hit = this.add.circle(p.x, p.y, this.touch.enabled ? 60 : 40, 0xffffff, 0.001).setInteractive({ useHandCursor: true });
         hit.on("pointerdown", () => { this.worldmapSel = idx; this.travelFromMap(); });
         layer.add(hit);
       }
@@ -1199,18 +1204,18 @@ export class MmoGameScene extends Phaser.Scene {
     const W = this.scale.width;
     const H = this.scale.height;
     // ☰ メニューボタン（右上）
-    const mbR = 44, mbX = W - mbR - 30, mbY = mbR + 30;
+    const mbR = 60, mbX = W - mbR - 30, mbY = mbR + 30;
     const mbBg = this.add.circle(mbX, mbY, mbR, 0x161122, 0.7).setStrokeStyle(3, 0x8a7ab5, 0.8)
       .setScrollFactor(0).setDepth(4000).setInteractive({ useHandCursor: true });
-    const mbTxt = this.add.text(mbX, mbY, "☰", { fontSize: "40px", color: "#ece7f5" })
+    const mbTxt = this.add.text(mbX, mbY, "☰", { fontSize: "56px", color: "#ece7f5" })
       .setOrigin(0.5).setScrollFactor(0).setDepth(4001);
     mbBg.on("pointerdown", () => { if (this.menuLayer) this.closeTouchMenu(); else this.openTouchMenu(); });
     this.uiLayer.add([mbBg, mbTxt]);
 
     // 近接✋ボタン（右下・攻撃ボタンの上。near*時のみ表示）
-    const ibR = 64, ibX = W - ibR - 88, ibY = H - ibR - 250;
+    const ibR = 88, ibX = W - ibR - 96, ibY = H - ibR - 300;
     const ibBg = this.add.circle(0, 0, ibR, 0x2f5a7d, 0.5).setStrokeStyle(4, 0x57a0c0, 0.8);
-    const ibTxt = this.add.text(0, 0, "✋", { fontSize: "40px", color: "#ffffff" }).setOrigin(0.5);
+    const ibTxt = this.add.text(0, 0, "✋", { fontSize: "56px", color: "#ffffff" }).setOrigin(0.5);
     const ib = this.add.container(ibX, ibY, [ibBg, ibTxt]).setScrollFactor(0).setDepth(4000).setVisible(false);
     ibBg.setInteractive(new Phaser.Geom.Circle(0, 0, ibR), Phaser.Geom.Circle.Contains);
     ibBg.on("pointerdown", () => this.tryInteract());
@@ -1232,19 +1237,21 @@ export class MmoGameScene extends Phaser.Scene {
     this.menuLayer = layer;
     layer.add(this.add.rectangle(cx, height / 2, width, height, 0x000000, 0.78).setInteractive()
       .on("pointerdown", () => this.closeTouchMenu()));
-    const pw = Math.min(440, width - 80);
+    const pw = Math.min(560, width - 60);
     const px = cx - pw / 2;
-    let y = height / 2 - 210;
     const me: any = (this.room.state as any).players.get(this.myId);
+    const rowCount = 4 + ITEM_ORDER.filter((id) => ((me?.items?.get(id) ?? 0) as number) > 0).length;
+    const rowH = 78, rowGap = 14;
+    let y = height / 2 - (rowCount * (rowH + rowGap)) / 2;
     const row = (label: string, onTap: () => void, sub = "") => {
-      const h = 56;
+      const h = rowH;
       const bg = this.add.rectangle(cx, y, pw, h, 0x1c1530, 0.98).setStrokeStyle(2, 0x4a4360)
         .setInteractive({ useHandCursor: true });
       bg.on("pointerdown", () => { this.closeTouchMenu(); onTap(); });
-      const t = this.add.text(px + 24, y, label, { fontSize: "22px", color: "#ece7f5", fontStyle: "bold" }).setOrigin(0, 0.5);
+      const t = this.add.text(px + 30, y, label, { fontSize: "30px", color: "#ece7f5", fontStyle: "bold" }).setOrigin(0, 0.5);
       layer.add([bg, t]);
-      if (sub) layer.add(this.add.text(px + pw - 24, y, sub, { fontSize: "16px", color: "#9b93b0" }).setOrigin(1, 0.5));
-      y += h + 12;
+      if (sub) layer.add(this.add.text(px + pw - 30, y, sub, { fontSize: "22px", color: "#9b93b0" }).setOrigin(1, 0.5));
+      y += h + rowGap;
     };
     row("📖 台帳", () => this.toggleBinder());
     row("📊 ステータス", () => this.toggleStatus());
@@ -1255,7 +1262,7 @@ export class MmoGameScene extends Phaser.Scene {
       if (n > 0) row(`${ITEM_META[id]?.icon ?? "🧪"} ${ITEM_META[id]?.name ?? id}`, () => this.useItem(id), `×${n}`);
     });
     row("🏠 ハブに戻る", () => this.room.leave());
-    layer.add(this.add.text(cx, y + 6, "✕ 閉じる", { fontSize: "18px", color: "#cccccc" }).setOrigin(0.5)
+    layer.add(this.add.text(cx, y + 12, "✕ 閉じる", { fontSize: "26px", color: "#cccccc" }).setOrigin(0.5)
       .setInteractive({ useHandCursor: true }).on("pointerdown", () => this.closeTouchMenu()));
   }
 
@@ -2048,12 +2055,15 @@ export class MmoGameScene extends Phaser.Scene {
   }
 
   private static readonly BINDER_COLS = 9;
+  private binderCols = 9; // 実効列数（タッチ時は少なくしてカードを大きく）
+  private binderPage = 0;  // 台帳のページ（タッチ時のページ送り用）
 
   // キーで台帳のレアリティタブを切替（開いている時だけ有効。再取得せず再描画）。
   private setBinderTab(tab: "common" | "rare" | "legend") {
     if (!this.binderLayer || this.binderTab === tab) return;
     this.binderTab = tab;
     this.binderSel = 0;
+    this.binderPage = 0;
     this.drawBinder();
   }
 
@@ -2062,7 +2072,7 @@ export class MmoGameScene extends Phaser.Scene {
     if (!this.binderLayer || !this.binderCache) return;
     const list = this.binderCache.cards.filter((c) => c.rarity === this.binderTab);
     if (list.length === 0) return;
-    let i = this.binderSel + dCol + dRow * MmoGameScene.BINDER_COLS;
+    let i = this.binderSel + dCol + dRow * this.binderCols;
     i = Math.max(0, Math.min(i, list.length - 1));
     if (i !== this.binderSel) { this.binderSel = i; this.drawBinder(); }
   }
@@ -2074,6 +2084,7 @@ export class MmoGameScene extends Phaser.Scene {
     this.uiLayer.add(layer);
     this.binderLayer = layer;
     this.binderSel = 0;
+    this.binderPage = 0;
     this.binderDetail = false;
     this.binderCache = undefined;
     this.drawBinder(); // まず「読み込み中」枠を描く
@@ -2100,7 +2111,8 @@ export class MmoGameScene extends Phaser.Scene {
     layer.add(this.add.text(cx, 26, "霊宝台帳", { fontSize: "26px", color: "#e8c87e", fontStyle: "bold" }).setOrigin(0.5));
     const info = this.add.text(cx, 58, "読み込み中…", { fontSize: "14px", color: "#9b93b0" }).setOrigin(0.5);
     layer.add(info);
-    const close = this.add.text(width - 30, 24, "✕ 閉じる (B)", { fontSize: "16px", color: "#cccccc" }).setOrigin(1, 0)
+    const touchUi = this.touch.enabled;
+    const close = this.add.text(width - 30, 24, "✕ 閉じる (B)", { fontSize: touchUi ? "26px" : "16px", color: "#cccccc" }).setOrigin(1, 0)
       .setInteractive({ useHandCursor: true });
     close.on("pointerdown", () => this.closeBinder());
     layer.add(close);
@@ -2108,18 +2120,19 @@ export class MmoGameScene extends Phaser.Scene {
     const tabs: Array<{ key: "common" | "rare" | "legend"; label: string; num: string }> = [
       { key: "common", label: "普通", num: "1" }, { key: "rare", label: "希少", num: "2" }, { key: "legend", label: "秘宝", num: "3" },
     ];
+    const tabGap = touchUi ? 180 : 130;
     tabs.forEach((t, i) => {
       const on = this.binderTab === t.key;
-      const tabTxt = this.add.text(cx - 130 + i * 130, 92, `${t.num}: ${t.label}`, {
-        fontSize: "18px", fontStyle: "bold",
+      const tabTxt = this.add.text(cx - tabGap + i * tabGap, 96, `${t.num}: ${t.label}`, {
+        fontSize: touchUi ? "26px" : "18px", fontStyle: "bold",
         color: on ? "#15101f" : RARITY_META[t.key].colorStr,
         backgroundColor: on ? RARITY_META[t.key].colorStr : "#1c1530",
-        padding: { x: 14, y: 6 } as any,
+        padding: { x: touchUi ? 22 : 14, y: touchUi ? 12 : 6 } as any,
       }).setOrigin(0.5).setInteractive({ useHandCursor: true });
       tabTxt.on("pointerdown", () => this.setBinderTab(t.key));
       layer.add(tabTxt);
     });
-    layer.add(this.add.text(cx, 120, "1/2/3 タブ　・　矢印/WASD 選択　・　B 閉じる", { fontSize: "12px", color: "#6a6285" }).setOrigin(0.5));
+    if (!touchUi) layer.add(this.add.text(cx, 120, "1/2/3 タブ　・　矢印/WASD 選択　・　B 閉じる", { fontSize: "12px", color: "#6a6285" }).setOrigin(0.5));
 
     if (errorMsg) { info.setText(errorMsg).setColor("#e08a8a"); return; }
     const cache = this.binderCache;
@@ -2135,12 +2148,24 @@ export class MmoGameScene extends Phaser.Scene {
 
     const list = cards.filter((c) => c.rarity === this.binderTab);
     this.binderSel = Math.max(0, Math.min(this.binderSel, list.length - 1));
-    const cols = MmoGameScene.BINDER_COLS, cellW = 104, cellH = 138, gapX = 10, gapY = 16;
+    // タッチ時はカードを大きく＝タップしやすく。ただし台帳はスクロール非対応なので
+    // 大型カードは1ページに収まる枚数だけ表示し、◀▶でページ送りする（デスクトップは従来の全表示）。
+    const touch = this.touch.enabled;
+    const cols = touch ? 4 : MmoGameScene.BINDER_COLS;
+    this.binderCols = cols;
+    const cellW = touch ? 208 : 104, cellH = touch ? 270 : 138;
+    const gapX = touch ? 26 : 10, gapY = touch ? 22 : 16;
+    const startY = touch ? 206 : 188;
+    const perPage = touch ? cols * 2 : list.length; // タッチ=4×2=8枚/ページ
+    const pageCount = Math.max(1, Math.ceil(list.length / perPage));
+    this.binderPage = Math.max(0, Math.min(this.binderPage, pageCount - 1));
+    const pageStart = this.binderPage * perPage;
+    const pageItems = list.slice(pageStart, pageStart + perPage);
     const totalW = cols * cellW + (cols - 1) * gapX;
     const startX = (width - totalW) / 2 + cellW / 2;
-    const startY = 188;
-    list.forEach((c, i) => {
-      const col = i % cols, row = Math.floor(i / cols);
+    pageItems.forEach((c, j) => {
+      const i = pageStart + j;
+      const col = j % cols, row = Math.floor(j / cols);
       const x = startX + col * (cellW + gapX);
       const y = startY + row * (cellH + gapY);
       const count = owned.get(c.id) ?? 0;
@@ -2153,7 +2178,23 @@ export class MmoGameScene extends Phaser.Scene {
       card.on("pointerdown", () => { this.binderSel = i; this.binderDetail = true; this.drawBinder(); });
       layer.add(card);
     });
-    layer.add(this.add.text(cx, height - 30, "霊宝をタップ / Enter で詳細表示", { fontSize: "13px", color: "#7ee787" }).setOrigin(0.5));
+    // ページ送り（タッチ時・複数ページのみ）
+    if (touch && pageCount > 1) {
+      const arrowY = height - 64;
+      const mkArrow = (label: string, dx: number, enabled: boolean) => {
+        const bx = cx + dx;
+        const bg = this.add.circle(bx, arrowY, 40, 0x1c1530, 0.96).setStrokeStyle(2, enabled ? 0x8a7ab5 : 0x3a3550);
+        const t = this.add.text(bx, arrowY, label, { fontSize: "40px", color: enabled ? "#ece7f5" : "#555" }).setOrigin(0.5);
+        if (enabled) { bg.setInteractive({ useHandCursor: true }).on("pointerdown", () => { this.binderPage += (dx < 0 ? -1 : 1); this.drawBinder(); }); }
+        layer.add([bg, t]);
+      };
+      mkArrow("◀", -120, this.binderPage > 0);
+      mkArrow("▶", 120, this.binderPage < pageCount - 1);
+      layer.add(this.add.text(cx, arrowY, `${this.binderPage + 1} / ${pageCount}`, { fontSize: "20px", color: "#9b93b0" }).setOrigin(0.5));
+      layer.add(this.add.text(cx, height - 18, "カードをタップで詳細", { fontSize: "15px", color: "#7ee787" }).setOrigin(0.5));
+    } else {
+      layer.add(this.add.text(cx, height - 30, "霊宝をタップ / Enter で詳細表示", { fontSize: "13px", color: "#7ee787" }).setOrigin(0.5));
+    }
   }
 
   // 詳細表示：左に拡大した霊宝（水平＝縦軸まわりに反時計回転、90度で縦線）、右に説明文。
